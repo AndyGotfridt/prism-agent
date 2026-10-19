@@ -57,6 +57,13 @@ fi
 rm -rf "$WORK"
 mkdir -p "$WORK"
 cp -R "$HERE/package.json" "$HERE/bin" "$HERE/src" "$WORK/"
+# Ayudante de avisos de macOS (compilado en una Mac con helpers/macos/build.sh): se embebe en el
+# ejecutable y el agente lo extrae a su carpeta de estado. Sin el .tar.gz, el agente usa la ventanita.
+if [ -f "$HERE/helpers/macos/PrismaNotify.tar.gz" ]; then
+  mkdir -p "$WORK/helpers/macos"
+  cp "$HERE/helpers/macos/PrismaNotify.tar.gz" "$WORK/helpers/macos/"
+  printf "import file from '../helpers/macos/PrismaNotify.tar.gz' with { type: 'file' };\nexport default file;\n" > "$WORK/src/embedded-helper.js"
+fi
 cd "$WORK"
 "$BUN" install --production
 VERSION="$("$BUN" -e 'console.log(require("./package.json").version)')"

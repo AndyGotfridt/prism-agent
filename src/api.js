@@ -1,5 +1,6 @@
 import { platform } from 'node:os';
 import { autostartEnabled } from './autostart.js';
+import { updateChannel } from './prefs.js';
 import { VERSION } from './version.js';
 
 export const USER_AGENT = `PrismaAgent/${VERSION} (${platform()})`;
@@ -35,6 +36,7 @@ export class Api {
             Accept: 'application/json',
             'X-Agent-Version': VERSION,
             'X-Agent-Platform': platform(),
+            'X-Agent-Channel': updateChannel(),
             ...headers,
         };
         // Estado real del inicio automático (Mi perfil lo muestra y lo puede cambiar).

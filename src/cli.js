@@ -14,6 +14,8 @@ import { selfCommand } from './runtime.js';
 import { windowsRootsPem } from './system-ca.js';
 import { VERSION } from './version.js';
 import { LINUX_LOG, installLinux, restartLinux, startLinux, uninstallLinux, isInstalledLinux } from './systemd.js';
+import { handleUrl } from './windows-toast.js';
+import { CHANNELS, updateChannel, writePrefs } from './prefs.js';
 import { WINDOWS_LOG, installWindows, restartWindows, startWindows, uninstallWindows } from './windows-service.js';
 import { canSelfUpdate, changeVerb, installUpdate, wantsChange } from './updater.js';
 import { DEMO_ENABLED, DEMO_SCENARIOS, runDemo } from './demo.js';
@@ -41,7 +43,9 @@ Uso:
   prisma-agent start          Lo abre en segundo plano si está cerrado (lo mismo que el acceso «Prisma Sync»)
 ${DEMO_ENABLED ? `  prisma-agent demo [${DEMO_SCENARIOS.join('|')}]
                               Muestra la ventanita con un caso de prueba (no sube nada)
-` : ''}  prisma-agent update         Baja e instala la versión publicada en Prisma (y reinicia el servicio)
+` : ''}  prisma-agent channel [stable|beta]
+                              Canal de actualizaciones de esta computadora (sin argumento: muestra el actual)
+  prisma-agent update         Baja e instala la versión publicada en Prisma (y reinicia el servicio)
   prisma-agent install        Lo deja corriendo al iniciar sesión (macOS: launchd · Windows: carpeta Inicio · Linux: systemd --user)
   prisma-agent bridge status  Modo puente: impresoras que ve este agente, conexión y último reporte
   prisma-agent uninstall
@@ -165,6 +169,27 @@ export async function main(argv) {
             else if (IS_LINUX) startLinux();
             else startMac();
             console.log('✔ Abierto.');
+            return;
+        case 'channel': {
+            // Mismo filtrado que parseArgs: sin `--profile <x>`; [0] es «channel» y [1] el canal pedido.
+            const rest = [];
+            for (let i = 0; i < argv.length; i++) {
+                if (argv[i] === '--profile') i++;
+                else if (!argv[i].startsWith('--profile=')) rest.push(argv[i]);
+            }
+            const wanted = rest[1];
+            if (wanted === undefined) {
+                console.log(`Canal de actualizaciones: ${CHANNELS[updateChannel()]} (${updateChannel()})`);
+                return;
+            }
+            if (!(wanted in CHANNELS)) throw new Error(`Canal inválido «${wanted}»: stable o beta.`);
+            writePrefs({ update_channel: wanted });
+            console.log(`✔ Canal ${CHANNELS[wanted]}. Se aplica en el próximo sondeo, o con «Comprobar actualizaciones» en el menú del agente (o \`${COMMAND} update\`).`);
+            return;
+        }
+        case 'handle-url':
+            // Lo corre el protocolo prisma-agent:// de Windows (botones de los avisos): sin salida, sin sesión.
+            handleUrl(process.env.PA_URL);
             return;
         case 'install':
             return IS_WINDOWS ? installWindows() : IS_LINUX ? installLinux() : installMac();

@@ -18,6 +18,7 @@ const LAUNCHER = join(STARTUP_DIR, `${profiled('prisma-agent')}.vbs`);
 const SESSION_LAUNCHER = join(STATE_DIR, 'run.vbs');
 /** Acceso «Prisma Sync» del menú Inicio → open.vbs (corre `start` y avisa si no arrancó). */
 const SHORTCUT = join(PROGRAMS_DIR, `${APP_TITLE}.lnk`);
+export const START_MENU_SHORTCUT = SHORTCUT;
 const OPEN_SCRIPT = join(STATE_DIR, 'open.vbs');
 const SHORTCUT_ICON = join(STATE_DIR, 'prisma.ico');
 

@@ -9,8 +9,9 @@ import { readLocalConfig } from './local-config.js';
 import { LOG_MAX_BYTES, log, ownLogFile, rotateLog, warn } from './log.js';
 import { readLogTail } from './log-tail.js';
 import { notify, openUrl } from './notify.js';
+import { showNative } from './native-notify.js';
 import { hideProgress, onKindClosed, showMessage, showProgress, startTray, stopTray, updateTray } from './progress-ui.js';
-import { readPrefs, writePrefs } from './prefs.js';
+import { CHANNELS, readPrefs, updateChannel, writePrefs } from './prefs.js';
 import { Bridge } from './bridge/bridge.js';
 import { isInstalledLinux, runningUnderSystemd, LINUX_LOG } from './systemd.js';
 import { DEMO_ENABLED, runDemo } from './demo.js';
@@ -157,6 +158,7 @@ class Agent {
         this.authNotified = false;
         this.update = null; // agent_update de /config
         this.updateCommands = null;
+        this.updateChannels = ['stable']; // canales que ofrece el server (beta sólo si hay una versión beta)
         this.updating = false;
         this.uploadingName = null;
         this.me = null; // GET /me: usuario y dispositivo (para el menú del ícono)
@@ -300,6 +302,7 @@ class Agent {
             const { config, min_agent_version: minVersion, agent_blocked: withdrawn } = res.data;
             this.update = res.data.agent_update ?? (res.data.latest_agent_version ? { version: res.data.latest_agent_version, files: {} } : null);
             this.updateCommands = res.data.update_commands;
+            this.updateChannels = Array.isArray(res.data.update_channels) ? res.data.update_channels : ['stable'];
 
             // Versión retirada desde Administración → Prisma Agent → Versiones: no sube nada y
             // cambia a la objetivo sin preguntar (también si es una anterior).
@@ -621,6 +624,13 @@ class Agent {
                 hasUpdate
                     ? { id: 'update', label: updateLabel, icon: 'update', disabled: this.updating }
                     : { id: 'check_updates', label: this.checkingUpdates ? 'Buscando actualizaciones…' : 'Comprobar actualizaciones', icon: 'check', disabled: this.checkingUpdates },
+                ...(this.updateChannels.length > 1
+                    ? [{
+                        label: `Canal de actualizaciones: ${CHANNELS[updateChannel()]}`,
+                        icon: 'update',
+                        children: this.updateChannels.filter((c) => c in CHANNELS).map((c) => ({ id: `channel:${c}`, label: `${updateChannel() === c ? '✓ ' : ''}${CHANNELS[c]}` })),
+                    }]
+                    : []),
                 { id: 'open_log', label: 'Ver logs', icon: 'log' },
                 SEP,
                 ...(user ? [{ label: user.email, disabled: true }] : []),
@@ -863,7 +873,9 @@ class Agent {
                 this.openLog();
                 break;
             default:
-                if (action.startsWith('recent:')) {
+                if (action.startsWith('channel:')) {
+                    this.changeChannel(action.slice(8));
+                } else if (action.startsWith('recent:')) {
                     const url = this.recent[Number(action.slice(7))]?.url;
                     if (url) openUrl(url);
                 }
@@ -916,6 +928,21 @@ class Agent {
         this.manual.add(path);
         this.enqueue(path);
         if (this.paused) notify('Sincronización en pausa', `${basename(path)} se sube al reanudar.`);
+    }
+
+    /**
+     * Cambia de canal (Ajustes → Canal de actualizaciones): lo guarda, avisa y consulta ya. Pasar de
+     * beta a estable es bajar de versión: el server lo pide como «revertir» y se instala solo.
+     */
+    changeChannel(channel) {
+        if (!(channel in CHANNELS) || channel === updateChannel()) return;
+        writePrefs({ update_channel: channel });
+        log(`Update channel changed to ${channel}`);
+        notify(`Canal ${CHANNELS[channel]}`, channel === 'beta'
+            ? 'Vas a recibir las versiones de prueba antes que el resto.'
+            : 'Vas a recibir sólo las versiones estables (si tenés una beta, vuelve a la estable).', 'info');
+        this.refreshTray();
+        this.checkUpdatesNow();
     }
 
     /** «Buscar actualizaciones»: consulta ya (sin esperar los 5 min) y, si hay, pregunta. */
@@ -976,13 +1003,32 @@ class Agent {
                 const alert = this.alertQueue.shift();
                 const image = alert.image ? await this.downloadAlertImage(alert) : null;
                 log(`Desktop alert #${alert.id}${image ? ' (with photo)' : ''}`);
-                const action = alert.url ? { label: 'Ver impresión', run: () => openUrl(alert.url) } : null;
+                const actions = this.alertActions(alert);
+                const native = await showNative({ title: alert.title, text: alert.text ?? '', image, actions, origin: new URL(this.baseUrl).origin });
+                if (native) continue;
+                // Respaldo: la ventanita propia, con el primer botón.
+                const first = actions[0];
+                const action = first ? { label: first.label, run: () => openUrl(first.url) } : null;
                 const ms = notify(alert.title, alert.text ?? '', alert.tone ?? 'info', action, { image });
                 if (this.alertQueue.length > 0) await sleep(ms);
             }
         })()
             .catch((err) => warn(`Desktop alert failed: ${err.message}`))
             .finally(() => { this.showingAlerts = false; });
+    }
+
+    /**
+     * Botones `open` del aviso. Sólo URLs del propio server (si no, se descartan); un aviso de un
+     * server viejo, sin `actions`, vale como un único «Ver impresión» con su `url`.
+     */
+    alertActions(alert) {
+        const origin = new URL(this.baseUrl).origin;
+        const sameOrigin = (url) => { try { return new URL(url).origin === origin; } catch { return false; } };
+        const list = Array.isArray(alert.actions) && alert.actions.length > 0
+            ? alert.actions
+            : alert.url ? [{ id: 'open', label: 'Ver impresión', kind: 'open', url: alert.url }] : [];
+
+        return list.filter((a) => a.kind === 'open' && a.label && sameOrigin(a.url)).slice(0, 3);
     }
 
     /** Baja la foto de un aviso a la carpeta de estado (quedan las últimas). null si no se pudo. */
