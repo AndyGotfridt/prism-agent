@@ -1,0 +1,10 @@
+{
+  "name": "prisma-agent-bridge-spikes",
+  "private": true,
+  "type": "module",
+  "description": "Spikes de docs/PLAN-AGENT-BRIDGE.md §10. No forman parte del agente.",
+  "dependencies": {
+    "basic-ftp": "^5.0.5",
+    "mqtt": "^5.10.0"
+  }
+}

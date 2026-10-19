@@ -1,0 +1,26 @@
+{
+  "name": "prisma-agent",
+  "productName": "Prisma Sync",
+  "version": "1.1.1",
+  "description": "Prisma Sync",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "prisma-agent": "bin/prisma-agent.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "basic-ftp": "^6.2.3",
+    "chokidar": "^4.0.3",
+    "mqtt": "^5.16.1"
+  },
+  "scripts": {
+    "build": "bash build.sh",
+    "local:login": "node bin/prisma-agent.js --profile local login --url https://prisma-3d.test",
+    "local": "node bin/prisma-agent.js --profile local run",
+    "local:demo": "node bin/prisma-agent.js --profile local demo",
+    "local:status": "node bin/prisma-agent.js --profile local status"
+  }
+}
