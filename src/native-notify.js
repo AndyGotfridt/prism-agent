@@ -12,7 +12,11 @@ import { showNativeWindows } from './windows-toast.js';
 /**
  * Aviso nativo del sistema con botones (docs/PLAN-AGENT-NOTIFICATIONS.md). macOS: por el
  * ayudante PrismaNotify.app (UNUserNotificationCenter), que abre él mismo las URLs de los
- * botones `open` (sólo del origen del server). Windows: toast por PowerShell (windows-toast.js). `showNative()` devuelve true si el aviso quedó
+ * botones `open` (sólo del origen del server) y, en los botones `api` (con o sin campo de texto,
+ * ej. el motivo de un rechazo), deja la respuesta en RESPONSES_DIR y avisa por `onResponse`
+ * (no tiene el token: el agente la manda al server). Windows: toast por PowerShell
+ * (windows-toast.js), sólo botones `open`: un `prisma-agent://` que ejecute algo lo podría
+ * disparar cualquier página web. `showNative()` devuelve true si el aviso quedó
  * posteado; false si hay que usar la ventanita (otra plataforma, sin ayudante, sin permiso,
  * modo concentración que el ayudante no ve, error). Nunca lanza.
  */
@@ -21,6 +25,8 @@ const HELPER_DIR = join(STATE_DIR, 'helpers');
 const HELPER_APP = join(HELPER_DIR, 'PrismaNotify.app');
 const HELPER_BIN = join(HELPER_APP, 'Contents', 'MacOS', 'PrismaNotify');
 const HASH_FILE = join(HELPER_DIR, 'PrismaNotify.sha256');
+/** Donde el ayudante deja lo que el usuario respondió a un botón `api` (run.js lo recoge). */
+export const RESPONSES_DIR = join(STATE_DIR, 'alert-responses');
 // Largo: la primera vez macOS espera a que la persona responda el permiso de notificaciones.
 const START_TIMEOUT_MS = 90_000;
 
@@ -89,33 +95,53 @@ async function ensureHelper() {
 }
 
 /**
- * @param {{title: string, text?: string, image?: string|null, actions?: Array<{id: string, label: string, kind: string, url?: string}>, origin: string}} alert
+ * @param {{title: string, text?: string, image?: string|null, actions?: Array<{id: string, label: string, kind: string, url?: string, input?: {placeholder?: string, button?: string}}>, origin: string, alertId?: number, wait?: number, onResponse?: () => void}} alert
  */
-export async function showNative({ title, text = '', image = null, actions = [], origin }) {
+export async function showNative({ title, text = '', image = null, actions = [], origin, alertId = 0, wait = 300, onResponse = null }) {
     if (platform() === 'win32') return showNativeWindows({ title, text, image, actions });
     if (platform() !== 'darwin' || helperDenied) return false;
     try {
         if (!(await ensureHelper())) return false;
 
-        const spec = { title, body: text, image, origin, wait: 300, actions: actions.filter((a) => a.kind === 'open').slice(0, 3) };
+        ensureDir(RESPONSES_DIR);
+        const spec = {
+            title,
+            body: text,
+            image,
+            origin,
+            wait,
+            alert: alertId,
+            responses_dir: RESPONSES_DIR,
+            actions: actions.filter((a) => a.kind === 'open' || a.kind === 'api').slice(0, 3),
+        };
         return await new Promise((resolve) => {
-            // Queda vivo hasta 5 min esperando un botón; sólo importa la primera línea.
+            // Queda vivo hasta 5 min esperando un botón. La primera línea es el estado del aviso;
+            // las siguientes (`response`) avisan que hay una respuesta lista en RESPONSES_DIR.
             const child = spawn(HELPER_BIN, ['--post', JSON.stringify(spec)], { stdio: ['ignore', 'pipe', 'ignore'], detached: true });
             let settled = false;
             const done = (ok) => { if (!settled) { settled = true; clearTimeout(timer); resolve(ok); } };
             const timer = setTimeout(() => { child.kill(); done(false); }, START_TIMEOUT_MS);
             let buf = '';
+            let first = true;
             child.stdout.on('data', (d) => {
                 buf += d;
-                const line = buf.split('\n')[0];
-                if (!buf.includes('\n')) return;
-                let status = 'error';
-                try { status = JSON.parse(line).status; } catch { /* queda error */ }
-                if (status === 'denied') {
-                    helperDenied = true;
-                    log('Native notifications are not allowed for the helper: using the agent window');
+                let end;
+                while ((end = buf.indexOf('\n')) >= 0) {
+                    const line = buf.slice(0, end);
+                    buf = buf.slice(end + 1);
+                    let status = 'error';
+                    try { status = JSON.parse(line).status; } catch { /* queda error */ }
+                    if (!first) {
+                        if (status === 'response') onResponse?.();
+                        continue;
+                    }
+                    first = false;
+                    if (status === 'denied') {
+                        helperDenied = true;
+                        log('Native notifications are not allowed for the helper: using the agent window');
+                    }
+                    done(status === 'posted');
                 }
-                done(status === 'posted');
             });
             child.on('error', () => done(false));
             child.on('close', () => done(false));

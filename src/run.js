@@ -9,7 +9,7 @@ import { readLocalConfig } from './local-config.js';
 import { LOG_MAX_BYTES, log, ownLogFile, rotateLog, warn } from './log.js';
 import { readLogTail } from './log-tail.js';
 import { notify, openUrl } from './notify.js';
-import { showNative } from './native-notify.js';
+import { RESPONSES_DIR, showNative } from './native-notify.js';
 import { hideProgress, onKindClosed, showMessage, showProgress, startTray, stopTray, updateTray } from './progress-ui.js';
 import { CHANNELS, readPrefs, updateChannel, writePrefs } from './prefs.js';
 import { Bridge } from './bridge/bridge.js';
@@ -38,6 +38,8 @@ const RECENT_FILE = join(STATE_DIR, 'recent.json');
 const RECENT_MAX = 5;
 const ALERTS_DIR = join(STATE_DIR, 'alerts');
 const ALERT_IMAGES_KEEP = 10;
+// Una respuesta a un aviso que no se pudo mandar (sin conexión) se reintenta hasta este tiempo.
+const RESPONSE_MAX_AGE_MS = 10 * 60_000;
 const RECENT_LABELS = { uploading: 'Subiendo…', verifying: 'Verificando…', ready: 'Listo', failed: 'Falló el análisis', duplicate: 'Ya estaba', error: 'No se subió' };
 const SEP = { separator: true };
 
@@ -397,6 +399,8 @@ class Agent {
             }
             // Avisos de escritorio (terminó/falló una impresión, con la foto de la cámara).
             if (Array.isArray(alerts) && alerts.length > 0) this.enqueueAlerts(alerts);
+            // Respuestas a botones `api` que el ayudante dejó mientras no escuchábamos (o falló el envío).
+            this.drainAlertResponses();
             // «Probar» desde Mi perfil: la ventanita con un escenario de prueba (no sube nada).
             if (demo && DEMO_ENABLED && !this.demoRunning) {
                 this.demoRunning = true;
@@ -1004,10 +1008,19 @@ class Agent {
                 const image = alert.image ? await this.downloadAlertImage(alert) : null;
                 log(`Desktop alert #${alert.id}${image ? ' (with photo)' : ''}`);
                 const actions = this.alertActions(alert);
-                const native = await showNative({ title: alert.title, text: alert.text ?? '', image, actions, origin: new URL(this.baseUrl).origin });
+                const native = await showNative({
+                    title: alert.title,
+                    text: alert.text ?? '',
+                    image,
+                    actions,
+                    origin: new URL(this.baseUrl).origin,
+                    alertId: Number(alert.id),
+                    onResponse: () => this.drainAlertResponses(),
+                });
                 if (native) continue;
-                // Respaldo: la ventanita propia, con el primer botón.
-                const first = actions[0];
+                // Respaldo: la ventanita propia, con el primer botón que sólo abre una pantalla
+                // (los `api` —aprobar, rechazar— piden un botón nativo, deliberado).
+                const first = actions.find((a) => a.kind === 'open');
                 const action = first ? { label: first.label, run: () => openUrl(first.url) } : null;
                 const ms = notify(alert.title, alert.text ?? '', alert.tone ?? 'info', action, { image });
                 if (this.alertQueue.length > 0) await sleep(ms);
@@ -1018,8 +1031,9 @@ class Agent {
     }
 
     /**
-     * Botones `open` del aviso. Sólo URLs del propio server (si no, se descartan); un aviso de un
-     * server viejo, sin `actions`, vale como un único «Ver impresión» con su `url`.
+     * Botones del aviso. `open`: sólo URLs del propio server (si no, se descartan). `api`: el server
+     * resuelve una acción de su lista cerrada (aprobar, rechazar…); con `input` pide un texto
+     * (macOS). Un aviso de un server viejo, sin `actions`, vale como un único «Ver impresión».
      */
     alertActions(alert) {
         const origin = new URL(this.baseUrl).origin;
@@ -1028,7 +1042,60 @@ class Agent {
             ? alert.actions
             : alert.url ? [{ id: 'open', label: 'Ver impresión', kind: 'open', url: alert.url }] : [];
 
-        return list.filter((a) => a.kind === 'open' && a.label && sameOrigin(a.url)).slice(0, 3);
+        return list
+            .filter((a) => a.label && (
+                (a.kind === 'open' && sameOrigin(a.url))
+                || (a.kind === 'api' && /^[a-z_]{1,40}$/.test(String(a.id ?? '')))
+            ))
+            .map((a) => (a.kind === 'api' && a.input
+                ? { ...a, input: { placeholder: String(a.input.placeholder ?? '').slice(0, 80), button: String(a.input.button ?? a.label).slice(0, 40) } }
+                : a))
+            .slice(0, 3);
+    }
+
+    /**
+     * Manda al server lo que el usuario respondió en un aviso (botón `api`; el ayudante de macOS deja
+     * un archivo por respuesta en RESPONSES_DIR) y muestra el resultado. Un error pasajero la deja
+     * para el próximo sondeo (hasta RESPONSE_MAX_AGE_MS); el resto se avisa y se descarta.
+     */
+    async drainAlertResponses() {
+        if (this.drainingResponses || !this.api) return;
+        this.drainingResponses = true;
+        try {
+            let names = [];
+            try { names = readdirSync(RESPONSES_DIR).filter((n) => n.endsWith('.json')).sort(); } catch { return; }
+            for (const name of names) {
+                const file = join(RESPONSES_DIR, name);
+                let response;
+                try { response = JSON.parse(readFileSync(file, 'utf8')); } catch { rmSync(file, { force: true }); continue; }
+                const alert = Number(response.alert);
+                const action = String(response.action ?? '');
+                if (!Number.isInteger(alert) || alert <= 0 || !/^[a-z_]{1,40}$/.test(action)) { rmSync(file, { force: true }); continue; }
+
+                try {
+                    const { data } = await this.api.post(`/alerts/${alert}/actions/${action}`, { text: String(response.text ?? '').slice(0, 255) });
+                    rmSync(file, { force: true });
+                    log(`Alert #${alert} answered (${action}): ${data?.message ?? 'ok'}`);
+                    await this.showResult(data?.already ? 'Sin cambios' : data?.ok ? 'Listo' : 'No se pudo', data?.message ?? '', data?.ok ? 'success' : 'error');
+                } catch (err) {
+                    const age = Date.now() - statSync(file).mtimeMs;
+                    if (err.retryable && age < RESPONSE_MAX_AGE_MS) { warn(`Alert #${alert} answer postponed: ${err.message}`); continue; }
+                    rmSync(file, { force: true });
+                    warn(`Alert #${alert} answer failed: ${err.message}`);
+                    await this.showResult('No se pudo responder el aviso', err.message, 'error');
+                }
+            }
+        } catch (err) {
+            warn(`Draining alert responses failed: ${err.message}`);
+        } finally {
+            this.drainingResponses = false;
+        }
+    }
+
+    /** Aviso corto, sin botones, con el resultado de una respuesta (nativo; la ventanita de respaldo). */
+    async showResult(title, text, tone) {
+        const native = await showNative({ title, text, origin: new URL(this.baseUrl).origin, wait: 10 });
+        if (!native) notify(title, text, tone);
     }
 
     /** Baja la foto de un aviso a la carpeta de estado (quedan las últimas). null si no se pudo. */
