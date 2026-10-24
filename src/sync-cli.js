@@ -18,7 +18,7 @@ const SYNC_HELP = `Sincronización Drive:
   ${COMMAND} sync pause <id|nombre>     Pausa (deja de sincronizar; no borra nada)
   ${COMMAND} sync resume <id|nombre>
   ${COMMAND} sync path <id|nombre> <carpeta>   Cambia la carpeta local (acepta ., ~ y relativas)
-  ${COMMAND} sync mirror <id|nombre> on|off    Reflejar borrados a la papelera de Drive
+  ${COMMAND} sync mirror <id|nombre> on|off    Reflejar borrados (subida: papelera de Drive; bajada: papelera local)
   ${COMMAND} sync rename <id|nombre> <nombre nuevo>
   ${COMMAND} sync confirm <id|nombre>   Confirma los borrados frenados
   ${COMMAND} sync keep <id|nombre>      Mantiene en Drive lo que falta localmente
@@ -83,8 +83,9 @@ export async function syncCommand(args, local) {
         }
         for (const s of list) {
             const flags = [s.enabled ? null : 'PAUSADA', s.mirror_deletes ? 'refleja borrados' : 'sólo agrega', s.this_device ? null : `en ${s.device}`].filter(Boolean);
-            console.log(`#${s.id}  ${s.name}  ·  ${s.enabled ? s.status_label : 'Pausada'}`);
-            console.log(`     ${s.local_path}  →  ${s.drive_path || '(Drive)'}`);
+            const down = s.direction === 'download';
+            console.log(`#${s.id}  ${s.name}  ·  ${s.enabled ? s.status_label : 'Pausada'}  ·  ${down ? 'baja de Drive' : 'sube a Drive'}`);
+            console.log(down ? `     ${s.drive_path || '(Drive)'}  →  ${s.local_path}` : `     ${s.local_path}  →  ${s.drive_path || '(Drive)'}`);
             console.log(`     ${s.files_count} archivos · última revisión ${ago(s.last_finished_at)} · ${flags.join(' · ')}`);
             if (s.blocked_deletions > 0) console.log(`     ⚠ ${s.blocked_deletions} borrados frenados: \`${COMMAND} sync confirm ${s.id}\` o \`${COMMAND} sync keep ${s.id}\``);
             if (s.last_error) console.log(`     ✖ ${s.last_error}`);

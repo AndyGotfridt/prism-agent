@@ -240,14 +240,16 @@ const PAGE = String.raw`<!doctype html>
 <div class="card" id="new">
  <div class="row"><strong class="grow">Nueva carpeta</strong><button id="toggleNew"></button></div>
  <div id="form" hidden>
+  <label class="l">Qué hace</label>
+  <select id="fDir"><option value="upload">Subir a Drive (computadora → Drive)</option><option value="download">Bajar de Drive (Drive → computadora)</option></select>
   <label class="l">Nombre</label><input type="text" id="fName" placeholder="Fotos del taller">
   <label class="l">Carpeta de esta computadora</label>
   <div class="row"><input class="grow" type="text" id="fPath" placeholder="~/Documents/…"><button id="pick"></button></div>
-  <label class="l">Destino en Drive <span class="hint">entrá a una carpeta y elegila</span></label>
+  <label class="l"><span id="fDriveLbl">Destino en Drive</span> <span class="hint">entrá a una carpeta y elegila</span></label>
   <div class="crumbs" id="crumbs"></div>
   <div class="folders" id="folders"></div>
   <div class="row" style="margin-top:8px"><button id="mk"></button><span class="grow"></span><span id="chosen" class="path"></span></div>
-  <div class="swrow"><span class="sw"><input type="checkbox" id="fMirror"><i></i></span><span>Reflejar borrados <span class="hint">· lo que borres acá va a la papelera de Drive</span></span></div>
+  <div class="swrow"><span class="sw"><input type="checkbox" id="fMirror"><i></i></span><span>Reflejar borrados <span class="hint" id="fMirrorHint">· lo que borres acá va a la papelera de Drive</span></span></div>
   <div class="row" style="margin-top:14px"><button class="primary" id="create"></button><button id="cancel">Cancelar</button></div>
  </div>
 </div>
@@ -347,18 +349,18 @@ async function loadProgress(){
 function card(s){
   var c = el('div',{className:'card'});
   var head = el('div',{className:'row'},[
-    el('div',{className:'grow'},[ el('div',{className:'name',textContent:s.name}), el('div',{className:'path',textContent:s.local_path+'  →  '+(s.drive_path||'Drive')}) ]),
+    el('div',{className:'grow'},[ el('div',{className:'name',textContent:s.name}), el('div',{className:'path',textContent:(s.direction==='download' ? (s.drive_path||'Drive')+'  →  '+s.local_path : s.local_path+'  →  '+(s.drive_path||'Drive'))}) ]),
     pill(s)
   ]);
   c.append(head);
   c.append(progBox(s));
   c.append(el('div',{className:'path',textContent:s.files_count+' archivos'+(s.last_error?' · ⚠ '+s.last_error:'')+(s.this_device?'':' · en '+s.device)}));
-  if(s.blocked_deletions>0){
+  if(s.direction!=='download' && s.blocked_deletions>0){
     c.append(el('div',{className:'msg bad',textContent:s.blocked_deletions+' archivos locales desaparecieron. ¿Mandarlos a la papelera de Drive?'}));
   }
   var r = el('div',{className:'row',style:'margin-top:12px'});
   function btn(icon,t,fn,cls){ var b=el('button',{className:cls||''}); lab(b,icon,t); b.onclick=fn; r.append(b); }
-  if(s.blocked_deletions>0){
+  if(s.direction!=='download' && s.blocked_deletions>0){
     btn('trash','Confirmar borrados', function(){ act(call('POST','drive-syncs/'+s.id+'/confirm-deletions',{})); }, 'danger');
     btn('check','Mantenerlos en Drive', function(){ act(call('POST','drive-syncs/'+s.id+'/keep-deleted',{})); });
   }
@@ -368,10 +370,10 @@ function card(s){
     var p = await call('POST','pick-folder',{}).catch(function(){ return {}; });
     if(p.path) act(call('PATCH','drive-syncs/'+s.id,{local_path:p.path}).then(function(){ show('Carpeta cambiada.'); }));
   });
-  btn('trash','Quitar', function(){ if(confirm('¿Dejar de sincronizar «'+s.name+'»? Lo que ya está en Drive no se toca.')) act(call('DELETE','drive-syncs/'+s.id)); }, 'danger');
+  btn('trash','Quitar', function(){ if(confirm('¿Dejar de sincronizar «'+s.name+'»? '+(s.direction==='download' ? 'Lo que ya se bajó queda en la computadora.' : 'Lo que ya está en Drive no se toca.'))) act(call('DELETE','drive-syncs/'+s.id)); }, 'danger');
   c.append(el('div',{className:'swrow'},[
     sw(s.mirror_deletes, function(v){ act(call('PATCH','drive-syncs/'+s.id,{mirror_deletes:v})); }),
-    el('span',{},['Reflejar borrados ', el('span',{className:'hint',textContent:'· lo que borres acá va a la papelera de Drive'})])
+    el('span',{},['Reflejar borrados ', el('span',{className:'hint',textContent: s.direction==='download' ? '· lo que se borre de Drive va a la papelera de esta carpeta' : '· lo que borres acá va a la papelera de Drive'})])
   ]));
   c.append(r);
   return c;
@@ -405,6 +407,12 @@ async function browse(parent){
 
 $('toggleNew').onclick = function(){ var f=$('form'); f.hidden=!f.hidden; if(!f.hidden && !state.chosen) browse(''); };
 $('cancel').onclick = function(){ $('form').hidden = true; };
+$('fDir').onchange = function(){
+  var down = $('fDir').value === 'download';
+  $('fDriveLbl').textContent = down ? 'Carpeta de Drive a bajar' : 'Destino en Drive';
+  $('fMirrorHint').textContent = down ? '· lo que se borre de Drive va a la papelera de esta carpeta' : '· lo que borres acá va a la papelera de Drive';
+  $('fMirror').checked = false;
+};
 $('pick').onclick = async function(){
   var b=$('pick'); b.disabled=true;
   try { var p = await call('POST','pick-folder',{}); if(p.path){ $('fPath').value=p.path; if(!$('fName').value) $('fName').value=p.path.split(/[\\/]/).filter(Boolean).pop()||''; } }
@@ -419,7 +427,7 @@ $('mk').onclick = async function(){
 $('create').onclick = async function(){
   try {
     if(!state.chosen) throw new Error('Elegí la carpeta de Drive.');
-    await call('POST','drive-syncs',{ name:$('fName').value, local_path:$('fPath').value, gdrive_folder_id:state.chosen.id, mirror_deletes:$('fMirror').checked });
+    await call('POST','drive-syncs',{ name:$('fName').value, local_path:$('fPath').value, gdrive_folder_id:state.chosen.id, direction:$('fDir').value, mirror_deletes:$('fMirror').checked });
     show('Listo: el agente empieza a sincronizar en unos segundos.');
     $('form').hidden = true; $('fName').value=''; $('fPath').value=''; state.chosen=null;
     await load();
