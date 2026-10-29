@@ -241,7 +241,7 @@ const PAGE = String.raw`<!doctype html>
  <div class="row"><strong class="grow">Nueva carpeta</strong><button id="toggleNew"></button></div>
  <div id="form" hidden>
   <label class="l">Qué hace</label>
-  <select id="fDir"><option value="upload">Subir a Drive (computadora → Drive)</option><option value="download">Bajar de Drive (Drive → computadora)</option></select>
+  <select id="fDir"><option value="upload">Subir a Drive (computadora → Drive)</option><option value="download">Bajar de Drive (Drive → computadora)</option><option value="both">Los dos sentidos (computadora ⇄ Drive)</option></select>
   <label class="l">Nombre</label><input type="text" id="fName" placeholder="Fotos del taller">
   <label class="l">Carpeta de esta computadora</label>
   <div class="row"><input class="grow" type="text" id="fPath" placeholder="~/Documents/…"><button id="pick"></button></div>
@@ -349,20 +349,23 @@ async function loadProgress(){
 function card(s){
   var c = el('div',{className:'card'});
   var head = el('div',{className:'row'},[
-    el('div',{className:'grow'},[ el('div',{className:'name',textContent:s.name}), el('div',{className:'path',textContent:(s.direction==='download' ? (s.drive_path||'Drive')+'  →  '+s.local_path : s.local_path+'  →  '+(s.drive_path||'Drive'))}) ]),
+    el('div',{className:'grow'},[ el('div',{className:'name',textContent:s.name}), el('div',{className:'path',textContent:(s.direction==='both' ? s.local_path+'  ⇄  '+(s.drive_path||'Drive') : s.direction==='download' ? (s.drive_path||'Drive')+'  →  '+s.local_path : s.local_path+'  →  '+(s.drive_path||'Drive'))}) ]),
     pill(s)
   ]);
   c.append(head);
   c.append(progBox(s));
   c.append(el('div',{className:'path',textContent:s.files_count+' archivos'+(s.last_error?' · ⚠ '+s.last_error:'')+(s.this_device?'':' · en '+s.device)}));
+  if(s.conflicts_count>0){
+    c.append(el('div',{className:'msg bad',textContent:s.conflicts_count+(s.conflicts_count===1?' archivo cambió':' archivos cambiaron')+' en la computadora y en Drive. Elegí cuál queda desde Mi perfil → Prisma Agent en la web.'}));
+  }
   if(s.direction!=='download' && s.blocked_deletions>0){
-    c.append(el('div',{className:'msg bad',textContent:s.blocked_deletions+' archivos locales desaparecieron. ¿Mandarlos a la papelera de Drive?'}));
+    c.append(el('div',{className:'msg bad',textContent: s.direction==='both' ? s.blocked_deletions+' archivos desaparecieron de un lado. ¿Borrarlos también del otro?' : s.blocked_deletions+' archivos locales desaparecieron. ¿Mandarlos a la papelera de Drive?'}));
   }
   var r = el('div',{className:'row',style:'margin-top:12px'});
   function btn(icon,t,fn,cls){ var b=el('button',{className:cls||''}); lab(b,icon,t); b.onclick=fn; r.append(b); }
   if(s.direction!=='download' && s.blocked_deletions>0){
     btn('trash','Confirmar borrados', function(){ act(call('POST','drive-syncs/'+s.id+'/confirm-deletions',{})); }, 'danger');
-    btn('check','Mantenerlos en Drive', function(){ act(call('POST','drive-syncs/'+s.id+'/keep-deleted',{})); });
+    btn('check', s.direction==='both' ? 'Conservarlos' : 'Mantenerlos en Drive', function(){ act(call('POST','drive-syncs/'+s.id+'/keep-deleted',{})); });
   }
   btn('sync','Sincronizar ahora', function(){ act(call('POST','drive-syncs/'+s.id+'/scan',{}).then(function(){ show('Revisión pedida.'); })); });
   btn(s.enabled?'pause':'play', s.enabled?'Pausar':'Reanudar', function(){ act(call('PATCH','drive-syncs/'+s.id,{enabled:!s.enabled})); });
@@ -370,10 +373,10 @@ function card(s){
     var p = await call('POST','pick-folder',{}).catch(function(){ return {}; });
     if(p.path) act(call('PATCH','drive-syncs/'+s.id,{local_path:p.path}).then(function(){ show('Carpeta cambiada.'); }));
   });
-  btn('trash','Quitar', function(){ if(confirm('¿Dejar de sincronizar «'+s.name+'»? '+(s.direction==='download' ? 'Lo que ya se bajó queda en la computadora.' : 'Lo que ya está en Drive no se toca.'))) act(call('DELETE','drive-syncs/'+s.id)); }, 'danger');
+  btn('trash','Quitar', function(){ if(confirm('¿Dejar de sincronizar «'+s.name+'»? '+(s.direction==='both' ? 'Lo que hay en la computadora y en Drive queda como está.' : s.direction==='download' ? 'Lo que ya se bajó queda en la computadora.' : 'Lo que ya está en Drive no se toca.'))) act(call('DELETE','drive-syncs/'+s.id)); }, 'danger');
   c.append(el('div',{className:'swrow'},[
     sw(s.mirror_deletes, function(v){ act(call('PATCH','drive-syncs/'+s.id,{mirror_deletes:v})); }),
-    el('span',{},['Reflejar borrados ', el('span',{className:'hint',textContent: s.direction==='download' ? '· lo que se borre de Drive va a la papelera de esta carpeta' : '· lo que borres acá va a la papelera de Drive'})])
+    el('span',{},[s.direction==='both' ? 'Propagar borrados ' : 'Reflejar borrados ', el('span',{className:'hint',textContent: s.direction==='both' ? '· lo que borres en un lado va a la papelera del otro' : s.direction==='download' ? '· lo que se borre de Drive va a la papelera de esta carpeta' : '· lo que borres acá va a la papelera de Drive'})])
   ]));
   c.append(r);
   return c;
@@ -408,9 +411,9 @@ async function browse(parent){
 $('toggleNew').onclick = function(){ var f=$('form'); f.hidden=!f.hidden; if(!f.hidden && !state.chosen) browse(''); };
 $('cancel').onclick = function(){ $('form').hidden = true; };
 $('fDir').onchange = function(){
-  var down = $('fDir').value === 'download';
-  $('fDriveLbl').textContent = down ? 'Carpeta de Drive a bajar' : 'Destino en Drive';
-  $('fMirrorHint').textContent = down ? '· lo que se borre de Drive va a la papelera de esta carpeta' : '· lo que borres acá va a la papelera de Drive';
+  var dir = $('fDir').value, down = dir === 'download', both = dir === 'both';
+  $('fDriveLbl').textContent = down ? 'Carpeta de Drive a bajar' : both ? 'Carpeta de Drive' : 'Destino en Drive';
+  $('fMirrorHint').textContent = both ? '· lo que borres en un lado va a la papelera del otro' : down ? '· lo que se borre de Drive va a la papelera de esta carpeta' : '· lo que borres acá va a la papelera de Drive';
   $('fMirror').checked = false;
 };
 $('pick').onclick = async function(){

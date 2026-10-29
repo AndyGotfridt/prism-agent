@@ -12,7 +12,7 @@ import { sha256File, withRetry } from './uploader.js';
 
 /**
  * Sincronización de carpetas locales con Google Drive, en una dirección por carpeta:
- * `SyncTask` (local → Drive) y `PullTask` (Drive → local, al final del archivo).
+ * `SyncTask` (local → Drive), `PullTask` (Drive → local) y `BothTask` (los dos sentidos), en ese orden de aparición.
  *
  * Local → Drive. El agente es «tonto»: recorre la carpeta, le cuenta al server qué hay (ruta, tamaño,
  * sha256) y sube lo que el server le pide. El contenido va **directo a Google** por una
@@ -980,6 +980,333 @@ class PullTask {
     }
 }
 
+// ============================================================================================
+// Los dos sentidos (computadora ⇄ Drive)
+// ============================================================================================
+
+/** `nombre.ext` → `nombre (conflicto 2026-10-29).ext`, sin pisar uno que ya exista. */
+function conflictName(abs) {
+    const day = new Date().toISOString().slice(0, 10);
+    const dir = dirname(abs);
+    const name = basename(abs);
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    let candidate = join(dir, `${stem} (conflicto ${day})${ext}`);
+    for (let i = 2; existsSync(candidate); i++) candidate = join(dir, `${stem} (conflicto ${day} ${i})${ext}`);
+
+    return candidate;
+}
+
+/**
+ * Una carpeta de la computadora y una de Drive que se mantienen iguales en los dos sentidos. El agente sólo
+ * cuenta qué hay de cada lado (ruta, tamaño, md5, fecha) y ejecuta lo que el server decide comparando con la
+ * base de la última vez que coincidían (App\Services\GoogleDrive\DriveSyncReconciler): subir, bajar, borrar en la
+ * computadora o conservar las dos. Lo que cambió en los dos lados queda congelado hasta que alguien elige en la
+ * web; acá no se resuelve nada. Revisión completa a los 3 s, cada 15 minutos y con «Sincronizar ahora».
+ */
+class BothTask extends PullTask {
+    // Subir un archivo es lo mismo que en SyncTask (start → PUT a Google → complete): sólo usa api(), path() y name.
+    pushFile = SyncTask.prototype.pushFile;
+
+    // El estado es un caché de md5 por tamaño+mtime (`md5`, `size`, `mtimeMs`) y el md5 de la última versión que quedó
+    // igual en los dos lados (`synced`): con eso se sabe si lo local cambió desde entonces antes de pisarlo.
+    stateFile() {
+        return join(CACHE_DIR, `both-${this.id}.json`);
+    }
+
+    start() {
+        log(`Drive both «${this.name}»: ${this.root}`);
+        setTimeout(() => this.requestScan('start'), 3000).unref();
+        this.scanTimer = setInterval(() => this.requestScan('periodic'), PULL_EVERY_MS);
+        this.scanTimer.unref();
+    }
+
+    remember(rel, entry, st) {
+        this.state[rel] = { id: entry.file_id, md5: entry.md5, size: st.size, mtimeMs: st.mtimeMs, synced: entry.md5 };
+        this.stateDirty = true;
+    }
+
+    log(message) {
+        log(`Drive both «${this.name}»: ${message}`);
+    }
+
+    async scan(reason) {
+        if (this.shouldStop()) return;
+        this.scanning = true;
+        const scanId = randomUUID();
+        const p = { seen: 0, planned: 0, processed: 0, uploaded: 0, failed: 0, walking: true, current: null };
+        this.progress = p;
+        const done = { uploaded: 0, downloaded: 0, deleted: 0 };
+        let incomplete = false;
+        let aborted = false;
+        let error = null;
+
+        try {
+            if (!this.ensureRoot()) {
+                await withRetry('drive-sync error', () => this.api().post(this.path('/error'), { message: `La carpeta ${this.spec.local_path} no existe en esta computadora y no se pudo crear (falta su carpeta padre).` }));
+                warn(`Drive both «${this.name}»: la carpeta no existe`);
+                this.scheduleRetry();
+
+                return;
+            }
+
+            this.log(`scan (${reason})`);
+            this.host.status(`Drive · ${this.name}: comprobando…`);
+            await withRetry('drive-sync scan', () => this.api().post(this.path('/scan'), { scan_id: scanId }));
+
+            // 1. Lo que hay en Drive: el server arma el índice mientras se recorre (no hace falta nada de las entradas).
+            let cursor = null;
+            do {
+                if (this.shouldStop()) throw new Aborted();
+                const query = `?scan_id=${scanId}${cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+                const { data } = await withRetry('drive-sync manifest', () => this.api().get(this.path(`/pull/manifest${query}`)));
+                cursor = data.cursor ?? null;
+                p.seen += data.entries.length;
+            } while (cursor !== null);
+
+            // 2. Lo que hay en la computadora.
+            const localOk = await this.sendLocal(scanId, p);
+
+            // 3. El server decide. Con una mitad incompleta no decide ni borra nada.
+            const { data: plan } = await withRetry('drive-sync reconcile', () =>
+                this.api().post(this.path('/both/reconcile'), { scan_id: scanId, local_complete: localOk, remote_complete: true }),
+            );
+            if (!localOk) incomplete = true;
+
+            if (plan.decided) {
+                const c = plan.counts ?? {};
+                p.planned = (c.download ?? 0) + (c.keep_both ?? 0) + (c.upload ?? 0) + (c.delete_local ?? 0);
+                p.walking = false;
+                this.log(`${p.seen} in Drive, ${p.planned} to do, ${plan.conflicts} conflicts${plan.held ? `, ${plan.held} deletions held` : ''}`);
+
+                // 4. Ejecutar. Bajar primero (nunca se pierde nada local sin papelera), subir, y por último borrar acá.
+                await this.runActions(scanId, 'download', p, done);
+                await this.runActions(scanId, 'keep_both', p, done);
+                await this.runActions(scanId, 'upload', p, done);
+                await this.runActions(scanId, 'delete_local', p, done);
+                this.purgeTrash();
+            }
+            p.walking = false;
+        } catch (err) {
+            if (err instanceof Aborted) {
+                aborted = true;
+            } else {
+                incomplete = true;
+                error = err instanceof ApiError ? err.message : `Error en la revisión: ${err.message}`;
+                warn(`Drive both «${this.name}»: ${error}`);
+            }
+        } finally {
+            this.scanning = false;
+            this.progress = null;
+            this.saveState();
+            this.host.status(null);
+        }
+
+        try {
+            await withRetry('drive-sync finish', () =>
+                this.api().post(this.path('/both/finish'), {
+                    scan_id: scanId,
+                    complete: !incomplete && !aborted,
+                    aborted,
+                    uploaded: done.uploaded,
+                    downloaded: done.downloaded,
+                    deleted: done.deleted,
+                    failed: p.failed,
+                    error,
+                }),
+            );
+            this.log(`${done.uploaded} uploaded, ${done.downloaded} downloaded, ${done.deleted} removed, ${p.failed} failed${aborted ? ' (interrupted)' : ''}${incomplete ? ' (incomplete)' : ''}`);
+        } catch (err) {
+            warn(`Drive both «${this.name}»: could not report the end of the scan: ${err.message}`);
+        }
+
+        if (error !== null || p.failed > 0) this.scheduleRetry();
+    }
+
+    // --- La computadora -------------------------------------------------------------------
+
+    /** Recorre la carpeta y manda (ruta, tamaño, md5, fecha) en lotes. Devuelve false si algo no se pudo leer. */
+    async sendLocal(scanId, p) {
+        let complete = true;
+        const seen = new Set();
+        const batch = [];
+        const flush = async () => {
+            if (batch.length === 0) return;
+            const files = batch.splice(0);
+            await withRetry('drive-sync local', () => this.api().post(this.path('/both/local'), { scan_id: scanId, files }));
+        };
+
+        for await (const abs of walk(this.root, (dir, err) => {
+            complete = false; // una carpeta ilegible se vería como «borrada»
+            warn(`Drive both «${this.name}»: no se pudo leer ${dir}: ${err.message}`);
+        })) {
+            if (this.shouldStop()) throw new Aborted();
+            const rel = relPath(this.root, abs);
+            try {
+                const st = await stat(abs);
+                const known = this.state[rel];
+                const md5 = known && known.size === st.size && known.mtimeMs === st.mtimeMs ? known.md5 : await md5File(abs);
+                if (!known || known.md5 !== md5 || known.size !== st.size || known.mtimeMs !== st.mtimeMs) {
+                    this.state[rel] = { id: known?.id ?? null, md5, size: st.size, mtimeMs: st.mtimeMs, synced: known?.synced ?? null };
+                    this.stateDirty = true;
+                }
+                seen.add(rel);
+                batch.push({ path: rel, size: st.size, md5, mtime_ms: Math.floor(st.mtimeMs) });
+                p.current = basename(rel);
+                this.host.status(`Drive · ${this.name}: leyendo la carpeta… ${seen.size} archivos`);
+                if (batch.length >= PLAN_BATCH) await flush();
+            } catch (err) {
+                if (err?.code === 'ENOENT') continue; // se borró mientras se recorría: la próxima pasada lo ve
+                complete = false;
+                warn(`Drive both «${this.name}»: ${rel}: ${err.message}`);
+            }
+        }
+        await flush();
+
+        if (complete) {
+            // El caché sólo vale para lo que sigue existiendo.
+            for (const rel of Object.keys(this.state)) if (!seen.has(rel)) delete this.state[rel];
+            this.stateDirty = true;
+        }
+        this.saveState();
+
+        return complete;
+    }
+
+    // --- Ejecutar lo decidido -------------------------------------------------------------
+
+    /** Pide por páginas los archivos con esa acción pendiente y los ejecuta de a uno; informa lo aplicado en lotes. */
+    async runActions(scanId, type, p, done) {
+        const applied = [];
+        const report = async () => {
+            if (applied.length === 0) return;
+            const items = applied.splice(0);
+            await withRetry('drive-sync applied', () => this.api().post(this.path('/both/applied'), { items }));
+        };
+
+        let after = 0;
+        do {
+            const { data } = await withRetry('drive-sync actions', () => this.api().get(this.path(`/both/actions?type=${type}&after=${after}`)));
+            after = data.next ?? null;
+
+            for (const entry of data.entries) {
+                if (this.shouldStop()) {
+                    await report();
+                    throw new Aborted();
+                }
+
+                p.current = basename(entry.path);
+                const pct = Math.floor((p.processed / Math.max(p.planned, 1)) * 100);
+                const verb = type === 'upload' ? 'subiendo' : type === 'delete_local' ? 'quitando' : 'bajando';
+                this.host.status(`Drive · ${this.name}: ${pct}% · ${verb} ${p.processed + 1} de ${p.planned} · ${p.current}`);
+
+                try {
+                    const result = await this.applyOne(type, entry);
+                    if (result) {
+                        applied.push(result);
+                        if (type === 'upload') done.uploaded++;
+                        else if (type === 'delete_local') done.deleted++;
+                        else done.downloaded++;
+                        p.uploaded++;
+                    }
+                } catch (err) {
+                    if (err instanceof Aborted) {
+                        await report();
+                        throw err;
+                    }
+                    p.failed++;
+                    warn(`Drive both «${this.name}»: ${entry.path}: ${err.message}`);
+                } finally {
+                    p.processed++;
+                }
+
+                if (applied.length >= PLAN_BATCH) await report();
+            }
+        } while (after !== null);
+
+        await report();
+    }
+
+    /** @returns {Promise<{path: string, action: string, md5?: string, size?: number}|null>} null = nada que informar (falló o cambió). */
+    async applyOne(type, entry) {
+        const segments = safeSegments(entry.path);
+        if (segments === null) throw new Error('ruta inválida');
+        const rel = segments.join('/');
+        const abs = join(this.root, ...segments);
+        if (abs !== this.root && !abs.startsWith(this.root + sep)) throw new Error('la ruta sale de la carpeta sincronizada');
+
+        if (type === 'delete_local') {
+            if (existsSync(abs)) this.toTrash(abs, rel);
+            delete this.state[rel];
+            this.stateDirty = true;
+
+            return { path: rel, action: type };
+        }
+
+        if (type === 'upload') return this.applyUpload(rel, abs);
+
+        return this.applyDownload(entry, rel, abs, type === 'keep_both');
+    }
+
+    async applyUpload(rel, abs) {
+        if (!existsSync(abs)) return null; // desapareció: la próxima pasada lo decide de nuevo
+        const st = statSync(abs);
+        if (!st.isFile()) throw new Error('en la computadora hay una carpeta con ese nombre');
+
+        const [md5, sha256] = await Promise.all([md5File(abs), sha256File(abs)]);
+        const result = await this.pushFile({ abs, path: rel, size: st.size, mtimeMs: st.mtimeMs, sha256 });
+        if (result === 'failed') throw new Error('no se pudo subir');
+        if (result === 'changed') return null; // cambió mientras subía: se repite en la próxima pasada
+
+        this.state[rel] = { id: this.state[rel]?.id ?? null, md5, size: st.size, mtimeMs: st.mtimeMs, synced: md5 };
+        this.stateDirty = true;
+
+        return { path: rel, action: 'upload', md5, size: st.size };
+    }
+
+    /** Baja el archivo de Drive. `keepLocal`: el local queda al lado como «nombre (conflicto fecha)». */
+    async applyDownload(entry, rel, abs, keepLocal) {
+        let local = null;
+        if (existsSync(abs)) {
+            const st = statSync(abs);
+            if (!st.isFile()) throw new Error('en la computadora hay una carpeta con ese nombre');
+            const known = this.state[rel];
+            const md5 = known && known.size === st.size && known.mtimeMs === st.mtimeMs ? known.md5 : await md5File(abs);
+            local = { st, md5 };
+        }
+
+        // Ya es igual a Drive: sólo queda fijar la base.
+        if (local && local.md5 === entry.md5) {
+            this.remember(rel, entry, local.st);
+
+            return { path: rel, action: keepLocal ? 'keep_both' : 'download', md5: entry.md5, size: entry.size };
+        }
+
+        const part = `${abs}.part`;
+        try {
+            ensureDir(dirname(abs));
+            await this.download(entry, part);
+
+            if (local && keepLocal) {
+                renameSync(abs, conflictName(abs)); // se sube como archivo nuevo en la próxima pasada
+            } else if (local && local.md5 !== this.state[rel]?.synced) {
+                this.toTrash(abs, rel); // lo editado acá (o que ya estaba) nunca se pierde sin red
+            }
+
+            renameSync(part, abs);
+            const when = entry.modified_at ? new Date(entry.modified_at) : null;
+            if (when && !Number.isNaN(when.getTime())) utimesSync(abs, new Date(), when);
+            this.remember(rel, entry, statSync(abs));
+        } catch (err) {
+            rmSync(part, { force: true });
+            throw err;
+        }
+
+        return { path: rel, action: keepLocal ? 'keep_both' : 'download', md5: entry.md5, size: entry.size };
+    }
+}
+
 /**
  * Administra las tareas de sincronización de esta computadora según `drive_syncs` de /config.
  * `host`: { api(), isPaused(), status(text|null) }.
@@ -1016,7 +1343,7 @@ export class DriveSyncRunner {
                 this.tasks.get(id).task.spec = spec;
                 continue;
             }
-            const Task = spec.direction === 'download' ? PullTask : SyncTask;
+            const Task = spec.direction === 'both' ? BothTask : spec.direction === 'download' ? PullTask : SyncTask;
             const task = new Task(
                 {
                     api: () => this.host.api(),

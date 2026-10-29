@@ -84,10 +84,12 @@ export async function syncCommand(args, local) {
         for (const s of list) {
             const flags = [s.enabled ? null : 'PAUSADA', s.mirror_deletes ? 'refleja borrados' : 'sólo agrega', s.this_device ? null : `en ${s.device}`].filter(Boolean);
             const down = s.direction === 'download';
-            console.log(`#${s.id}  ${s.name}  ·  ${s.enabled ? s.status_label : 'Pausada'}  ·  ${down ? 'baja de Drive' : 'sube a Drive'}`);
-            console.log(down ? `     ${s.drive_path || '(Drive)'}  →  ${s.local_path}` : `     ${s.local_path}  →  ${s.drive_path || '(Drive)'}`);
+            const both = s.direction === 'both';
+            console.log(`#${s.id}  ${s.name}  ·  ${s.enabled ? s.status_label : 'Pausada'}  ·  ${both ? 'los dos sentidos' : down ? 'baja de Drive' : 'sube a Drive'}`);
+            console.log(both ? `     ${s.local_path}  ⇄  ${s.drive_path || '(Drive)'}` : down ? `     ${s.drive_path || '(Drive)'}  →  ${s.local_path}` : `     ${s.local_path}  →  ${s.drive_path || '(Drive)'}`);
             console.log(`     ${s.files_count} archivos · última revisión ${ago(s.last_finished_at)} · ${flags.join(' · ')}`);
             if (s.blocked_deletions > 0) console.log(`     ⚠ ${s.blocked_deletions} borrados frenados: \`${COMMAND} sync confirm ${s.id}\` o \`${COMMAND} sync keep ${s.id}\``);
+            if (s.conflicts_count > 0) console.log(`     ⚠ ${s.conflicts_count} conflictos: elegí cuál versión queda en Mi perfil → Prisma Agent (web)`);
             if (s.last_error) console.log(`     ✖ ${s.last_error}`);
         }
 
