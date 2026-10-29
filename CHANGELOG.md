@@ -14,6 +14,14 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.5 (beta) — 2026-10-29
+
+- **Sincronización en los dos sentidos** (`direction: both`, `BothTask` en `src/drive-sync.js`). Cuenta lo que hay en cada lado
+  (md5), el server decide con la base de la última sincronización y el agente ejecuta: bajar, subir, quitar en la computadora
+  o conservar las dos. Lo que cambió en los dos lados no se toca: queda como conflicto para resolver en la web. Sin watcher
+  (revisión a los 3 s, cada 15 min y con «Sincronizar ahora»). Pantalla local y `sync list` muestran la nueva dirección.
+  El server no le manda carpetas `both` a un agente anterior a `DriveSyncService::BOTH_MIN_AGENT`.
+
 ## 1.1.4 (beta) — 2026-10-24
 
 - **Sincronización Drive → computadora.** Cada carpeta sincronizada tiene una dirección, elegida al crearla: *subir* (lo de
