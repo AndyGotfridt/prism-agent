@@ -14,6 +14,14 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.6 (beta) — 2026-10-30
+
+- **Enrolamiento de puentes**: `login --enroll <código>` canjea en `device/token` un código de un solo uso (24 h) que un admin
+  genera en Administración → Prisma Agent → Puentes → «Vincular un puente nuevo». El dispositivo nace con el puente prendido, sin
+  navegador ni `/agent/link`. Pensado para el contenedor (`PRISMA_ENROLL_CODE`).
+- **Modo sólo puente**: `PRISMA_AGENT_BRIDGE_ONLY=1` hace que `startWatcher()` no haga nada y no se configuren las carpetas a Drive
+  (`driveSync.configure`). Siguen el puente, los comandos y el auto-update.
+
 ## 1.1.5 (beta) — 2026-10-29
 
 - **Sincronización en los dos sentidos** (`direction: both`, `BothTask` en `src/drive-sync.js`). Cuenta lo que hay en cada lado
