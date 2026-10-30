@@ -707,6 +707,7 @@ class PullTask {
         const p = { seen: 0, planned: 0, processed: 0, uploaded: 0, failed: 0, walking: true, current: null };
         this.progress = p;
         const seenPaths = new Set();
+        let skippedFiles = 0;
         let incomplete = false;
         let aborted = false;
         let deleted = 0;
@@ -731,6 +732,7 @@ class PullTask {
                 const query = `?scan_id=${scanId}${cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
                 const { data } = await withRetry('drive-sync manifest', () => this.api().get(this.path(`/pull/manifest${query}`)));
                 cursor = data.cursor ?? null;
+                skippedFiles += data.skipped ?? 0;
 
                 for (const entry of data.entries) {
                     if (this.shouldStop()) {
@@ -788,10 +790,11 @@ class PullTask {
                     failed: p.failed,
                     deleted,
                     skipped_deletions: skippedDeletions,
+                    skipped: skippedFiles,
                     error,
                 }),
             );
-            log(`Drive pull «${this.name}»: ${p.seen} files, ${p.uploaded} downloaded, ${p.failed} failed, ${deleted} removed${aborted ? ' (interrupted)' : ''}${incomplete ? ' (incomplete)' : ''}`);
+            log(`Drive pull «${this.name}»: ${p.seen} files, ${p.uploaded} downloaded, ${p.failed} failed, ${deleted} removed${skippedFiles > 0 ? `, ${skippedFiles} skipped (Google docs, shortcuts)` : ''}${aborted ? ' (interrupted)' : ''}${incomplete ? ' (incomplete)' : ''}`);
         } catch (err) {
             warn(`Drive pull «${this.name}»: could not report the end of the scan: ${err.message}`);
         }
@@ -1038,6 +1041,7 @@ class BothTask extends PullTask {
         const p = { seen: 0, planned: 0, processed: 0, uploaded: 0, failed: 0, walking: true, current: null };
         this.progress = p;
         const done = { uploaded: 0, downloaded: 0, deleted: 0 };
+        let skippedFiles = 0;
         let incomplete = false;
         let aborted = false;
         let error = null;
@@ -1063,6 +1067,7 @@ class BothTask extends PullTask {
                 const { data } = await withRetry('drive-sync manifest', () => this.api().get(this.path(`/pull/manifest${query}`)));
                 cursor = data.cursor ?? null;
                 p.seen += data.entries.length;
+                skippedFiles += data.skipped ?? 0;
             } while (cursor !== null);
 
             // 2. Lo que hay en la computadora.
@@ -1113,10 +1118,11 @@ class BothTask extends PullTask {
                     downloaded: done.downloaded,
                     deleted: done.deleted,
                     failed: p.failed,
+                    skipped: skippedFiles,
                     error,
                 }),
             );
-            this.log(`${done.uploaded} uploaded, ${done.downloaded} downloaded, ${done.deleted} removed, ${p.failed} failed${aborted ? ' (interrupted)' : ''}${incomplete ? ' (incomplete)' : ''}`);
+            this.log(`${done.uploaded} uploaded, ${done.downloaded} downloaded, ${done.deleted} removed, ${p.failed} failed${skippedFiles > 0 ? `, ${skippedFiles} skipped (Google docs, shortcuts)` : ''}${aborted ? ' (interrupted)' : ''}${incomplete ? ' (incomplete)' : ''}`);
         } catch (err) {
             warn(`Drive both «${this.name}»: could not report the end of the scan: ${err.message}`);
         }
