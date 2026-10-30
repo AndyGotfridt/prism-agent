@@ -33,6 +33,8 @@ const UPLOADED_DIR = 'Subidos';
 const ERROR_DIR = 'Error';
 const AUTH_RETRY_MS = 60_000;
 const COMMANDS_EVERY_MS = 10_000;
+/** PRISMA_AGENT_BRIDGE_ONLY=1 (contenedor del puente): sólo puente; sin bandeja del slicer ni carpetas a Drive. */
+const BRIDGE_ONLY = process.env.PRISMA_AGENT_BRIDGE_ONLY === '1';
 const HOUR_MS = 60 * 60 * 1000;
 const RECENT_FILE = join(STATE_DIR, 'recent.json');
 const RECENT_MAX = 5;
@@ -74,7 +76,7 @@ export async function run() {
     if (process.platform === 'win32') refreshLauncherWindows(local.url);
     ensureOpenShortcut();
 
-    log(`Prisma Agent ${VERSION} started (${local.url})`);
+    log(`Prisma Agent ${VERSION} started (${local.url})${BRIDGE_ONLY ? ' · sólo puente' : ''}`);
     reportPendingUpdate();
 
     const agent = new Agent(local.url);
@@ -341,7 +343,7 @@ class Agent {
         }
 
         // Carpetas → Drive: sólo reinicia las que cambiaron.
-        await this.driveSync.configure(this.config.drive_syncs ?? []);
+        if (!BRIDGE_ONLY) await this.driveSync.configure(this.config.drive_syncs ?? []);
 
         return true;
     }
@@ -1190,6 +1192,7 @@ class Agent {
     }
 
     async startWatcher() {
+        if (BRIDGE_ONLY) return; // sin bandeja del slicer: no vigila ni crea carpetas
         await this.watcher?.close();
         // El watcher nuevo vuelve a emitir todo lo que hay en la carpeta: la cola arranca de cero.
         this.queue = [];

@@ -34,8 +34,9 @@ const DEFAULT_URL = 'https://3d.prism.com.ar';
 const HELP = `Prisma Agent ${VERSION}:
 
 Uso:
-  prisma-agent login [--url ${DEFAULT_URL}] [--name "MacBook de Andy"] [--device]
+  prisma-agent login [--url ${DEFAULT_URL}] [--name "MacBook de Andy"] [--device] [--enroll CÓDIGO]
                               --device: sin navegador, con un código que se ingresa en la web (automático en Linux sin pantalla)
+                              --enroll: puente vinculado desde el admin (Puentes → Vincular un puente nuevo), sin login
   prisma-agent logout
   prisma-agent status
   prisma-agent sync           Sincronización Drive: ver estado, pausar, cambiar carpeta (sync help)
@@ -117,7 +118,7 @@ export async function main(argv) {
         case 'login': {
             const url = typeof opts.url === 'string' ? opts.url : DEFAULT_URL;
             reexecWithExtraCaIfNeeded(url, argv);
-            return login({ url, name: typeof opts.name === 'string' ? opts.name : null, quiet: opts.quiet === true, device: opts.device === true });
+            return login({ url, name: typeof opts.name === 'string' ? opts.name : null, quiet: opts.quiet === true, device: opts.device === true, enroll: typeof opts.enroll === 'string' ? opts.enroll : null });
         }
         case 'logout':
             reexecWithExtraCaIfNeeded(local?.url, argv);

@@ -28,6 +28,11 @@ export async function login({ url, name, ...options }) {
         throw new Error(`Esta versión del agente (${VERSION}) es vieja: el servidor pide ${ping.min_agent_version} o más nueva.`);
     }
 
+    // Puente vinculado desde el admin: código de enrolamiento ya aprobado, sin navegador ni código que ingresar.
+    if (options.enroll) {
+        return loginWithEnrollment({ api, baseUrl, code: options.enroll, options });
+    }
+
     // Sin navegador en esta máquina (SSH, Raspberry Pi): código de dispositivo.
     if (options.device || (platform() === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY)) {
         return loginWithCode({ api, baseUrl, name, options });
@@ -121,6 +126,29 @@ async function loginWithCode({ api, baseUrl, name, options }) {
     console.log(`✔ Conectado como «${data.device_name}». El token vence el ${new Date(data.expires_at).toLocaleDateString()}.`);
     if (!options.quiet) {
         console.log('Siguiente paso: `prisma-agent install` para que arranque solo.');
+    }
+}
+
+/**
+ * `login --enroll <código>`: el código lo genera un admin en Administración → Prisma Agent → Puentes y ya viene
+ * aprobado (un solo uso, 24 h). Se canjea directo en `device/token`; el dispositivo nace con el puente prendido.
+ */
+async function loginWithEnrollment({ api, baseUrl, code, options }) {
+    let data;
+    try {
+        ({ data } = await api.post('/device/token', { device_code: String(code).trim() }));
+    } catch (err) {
+        if (err.status === 410 || err.status === 403) throw new Error('El código de enrolamiento venció o ya se usó. Generá otro en Administración → Prisma Agent → Puentes.');
+        throw err;
+    }
+    if (!data?.token) throw new Error('El código de enrolamiento no es válido.');
+
+    await setToken(baseUrl, data.token);
+    writeLocalConfig({ url: baseUrl, device_id: data.device_id, device_name: data.device_name });
+
+    console.log(`✔ Puente vinculado como «${data.device_name}». El token vence el ${new Date(data.expires_at).toLocaleDateString()}.`);
+    if (!options.quiet) {
+        console.log('Siguiente paso: `prisma-agent run`.');
     }
 }
 
