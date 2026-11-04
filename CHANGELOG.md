@@ -14,6 +14,17 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.7 (beta) — 2026-11-04
+
+- **Balanza de la LAN para el navegador** (`src/scale-local.js`): server en `127.0.0.1:47651` (puerto fijo) que hace de puente entre la
+  web y el ESP32 (`GET /ping`, `GET /weight`, `POST /tare`, `POST /calibrate` con `?host=&port=`). El peso en vivo y la tara dejan de dar
+  la vuelta por internet (el modo nube tardaba ~3,4 s por ciclo). Sólo responde si el `Origin` es el del server al que está vinculado
+  el agente (CORS de ese origen + `Access-Control-Allow-Private-Network`), sólo a IPs privadas (reusa `isPrivateIp`), rutas fijas,
+  sin redirecciones, timeout 2,5 s. Si el puerto está tomado (otro perfil) avisa en el log y la web cae al server. Se arranca en
+  `start()` y se frena junto al puente. Plan en `docs/PLAN-SCALE-LOCAL.md` (repo de Prisma 3D).
+- Drive: el log de las sincronizaciones de bajada y de los dos sentidos cuenta los archivos que el server omite (documentos de Google,
+  accesos directos).
+
 ## 1.1.6 (beta) — 2026-10-30
 
 - **Enrolamiento de puentes**: `login --enroll <código>` canjea en `device/token` un código de un solo uso (24 h) que un admin
