@@ -13,7 +13,6 @@ import { RESPONSES_DIR, showNative } from './native-notify.js';
 import { hideProgress, onKindClosed, showMessage, showProgress, startTray, stopTray, updateTray } from './progress-ui.js';
 import { CHANNELS, readPrefs, updateChannel, writePrefs } from './prefs.js';
 import { Bridge } from './bridge/bridge.js';
-import { ScaleLocal } from './scale-local.js';
 import { isInstalledLinux, runningUnderSystemd, LINUX_LOG } from './systemd.js';
 import { DEMO_ENABLED, runDemo } from './demo.js';
 import { login } from './login.js';
@@ -202,7 +201,6 @@ class Agent {
             showMessage('Ventanita de Drive oculta', 'Para volver a verla: Configurar → Sincronización Drive.');
         });
         this.bridge = new Bridge(() => this.api); // puente con las impresoras de la LAN (si la web lo prende)
-        this.scaleLocal = new ScaleLocal(() => this.baseUrl); // peso/tara de la balanza de la LAN para el navegador
         this.driveSyncRev = null; // revisión de las sincronizaciones que informa GET /commands
         this.driveSync = new DriveSyncRunner({
             api: () => this.api,
@@ -248,7 +246,6 @@ class Agent {
     }
 
     async start() {
-        this.scaleLocal.start();
         // Primera config: si no hay token o es inválido, espera a que se haga login.
         // Si se inicia sesión desde el ícono, `wake()` corta la espera.
         while (!(await this.refreshConfig())) {
@@ -272,7 +269,6 @@ class Agent {
             stopTray();
             await this.watcher?.close();
             this.bridge.stop('el agente se detiene');
-            this.scaleLocal.stop();
             await this.driveSync.stopAll();
             clearPid();
             process.exit(0);
@@ -549,7 +545,6 @@ class Agent {
 
         await this.watcher?.close();
             this.bridge.stop('el agente se detiene');
-            this.scaleLocal.stop();
             await this.driveSync.stopAll();
         if (process.platform === 'win32' && !restartWindows()) {
             log(`Actualizado a ${latest}: reiniciá \`${COMMAND} run\` para usarla.`);
@@ -1170,7 +1165,6 @@ class Agent {
         hideProgress();
         await this.watcher?.close();
             this.bridge.stop('el agente se detiene');
-            this.scaleLocal.stop();
             await this.driveSync.stopAll();
         clearPid();
         if (runningUnderLaunchd()) stopServiceUntilLogin(); // si no, KeepAlive lo relanza
