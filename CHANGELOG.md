@@ -14,6 +14,13 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.8 (beta) — 2026-11-04
+
+- Se quita el servidor local de la balanza (`src/scale-local.js`, `127.0.0.1:47651`) que trajo la 1.1.7: dependía del permiso de «Red
+  local» de macOS (el agente en segundo plano no lo tiene y el `fetch` al ESP32 daba `EHOSTUNREACH`) y de tener el agente en cada
+  compu. La balanza ahora se maneja desde el server por el puente, con `http.poll` / `http.request` que el agente ya tenía (`BridgeHttp`,
+  como los enchufes); no hay nada nuevo en el agente. Plan en `docs/PLAN-SCALE-BRIDGE.md` (repo de Prisma 3D).
+
 ## 1.1.7 (beta) — 2026-11-04
 
 - **Balanza de la LAN para el navegador** (`src/scale-local.js`): server en `127.0.0.1:47651` (puerto fijo) que hace de puente entre la
