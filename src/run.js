@@ -164,6 +164,8 @@ class Agent {
         this.updateCommands = null;
         this.updateChannels = ['stable']; // canales que ofrece el server (beta sólo si hay una versión beta)
         this.updating = false;
+        this.autoUpdate = false; // «Actualizar solo» (por puente, desde Prisma): instala sin preguntar
+        this.lastUpdateRequest = null; // último «Actualizar ahora» atendido (marca de tiempo del server)
         this.uploadingName = null;
         this.me = null; // GET /me: usuario y dispositivo (para el menú del ícono)
         this.counts = { notifications: 0, inbox_pending: null }; // de GET /commands
@@ -366,12 +368,14 @@ class Agent {
             let alerts;
             let driveSync;
             let bridge;
+            let updateCommand;
             try {
-                ({ data: { pick_folder: pick, demo, counts, autostart, send_log: sendLog, alerts, drive_sync: driveSync, bridge } } = await this.api.get('/commands'));
+                ({ data: { pick_folder: pick, demo, counts, autostart, send_log: sendLog, alerts, drive_sync: driveSync, bridge, update: updateCommand } } = await this.api.get('/commands'));
             } catch {
                 continue; // Red caída: lo reintenta en el próximo sondeo.
             }
             await this.bridge.sync(bridge);
+            this.handleUpdateCommand(updateCommand);
             // Carpetas → Drive: si cambió el conjunto en la web, se relee /config sin esperar los 5 min;
             // y «Sincronizar ahora» pedidos desde Mi perfil.
             if (driveSync) {
@@ -443,6 +447,24 @@ class Agent {
     }
 
     /**
+     * `update` de /commands: `auto` (instalar solo, sin preguntar) y `now` («Actualizar ahora» desde Prisma, una
+     * marca de tiempo que se atiende una sola vez). Sin await: la descarga puede tardar y el sondeo sigue.
+     */
+    handleUpdateCommand(command) {
+        this.autoUpdate = command?.auto === true;
+        const request = typeof command?.now === 'string' ? command.now : null;
+
+        if (request && request !== this.lastUpdateRequest) {
+            this.lastUpdateRequest = request;
+            log('Update requested from the web');
+            this.etag = null;
+            this.refreshConfig().then(() => this.maybeUpdate(true, { force: true })).catch((err) => warn(`Update request failed: ${err.message}`));
+        } else if (this.autoUpdate && wantsChange(this.update) && !this.updating) {
+            this.maybeUpdate(false).catch((err) => warn(`Auto update failed: ${err.message}`));
+        }
+    }
+
+    /**
      * Hay que cambiar de versión (wantsChange). Si es más nueva y no es obligatoria, pregunta
      * (diálogo nativo) y, si dicen que sí, se actualiza y se reinicia cuando no está subiendo
      * nada; «Más tarde» (o no contestar) vuelve a preguntar al día siguiente. Obligatoria
@@ -459,7 +481,7 @@ class Agent {
             this.notifyManualUpdate(latest);
             return;
         }
-        const mandatory = required || this.update.mandatory === true;
+        const mandatory = required || this.update.mandatory === true || this.autoUpdate;
         if (isSnoozed(latest, { onlyFailed: mandatory }) && !force) return;
         // Se pregunta con el agente quieto: subiendo, la ventanita está mostrando el progreso.
         if (!mandatory && (this.busy || this.queue.length > 0 || this.picking)) return;
@@ -536,7 +558,9 @@ class Agent {
     async restartAfterUpdate(latest) {
         // runningUnderLaunchd: con el inicio automático apagado desde Mi perfil no hay plist,
         // pero el servicio sigue cargado hasta cerrar sesión y KeepAlive lo relanza igual.
-        const service = process.platform === 'win32' || isInstalledMac() || runningUnderLaunchd() || isInstalledLinux() || runningUnderSystemd();
+        // Contenedor del puente: no hay quién lo relance, salvo Docker (`restart: unless-stopped`) al terminar el proceso.
+        const container = BRIDGE_ONLY && existsSync('/.dockerenv');
+        const service = container || process.platform === 'win32' || isInstalledMac() || runningUnderLaunchd() || isInstalledLinux() || runningUnderSystemd();
         if (!service) {
             log(`Actualizado a ${latest}: reiniciá \`${COMMAND} run\` para usarla.`);
             notify(`Se bajó la ${latest}`, 'Reiniciá el agente para usarla.');
