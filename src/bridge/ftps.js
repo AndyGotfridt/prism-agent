@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Client } from 'basic-ftp';
-import { log } from '../log.js';
+import { log, warn } from '../log.js';
 
 /**
  * Archivos de las impresoras Bambu por FTPS implícito (:990, usuario `bblp`, certificado autofirmado), lo que
@@ -146,7 +146,9 @@ export class FtpService {
 
             return await fn(client);
         } catch (err) {
-            throw new Error(String(err.message ?? err).replaceAll(printer.access_code, '***'));
+            const wrapped = new Error(String(err.message ?? err).replaceAll(printer.access_code, '***'));
+            wrapped.code = err.code; // el código FTP (550…) sirve a quien decide si reintentar
+            throw wrapped;
         } finally {
             client.close();
         }
@@ -201,7 +203,7 @@ export class FtpService {
             log(`Puente: subiendo «${remote}» a «${printer.name}» (${Math.round(expected / 1024 / 1024)} MB)`);
 
             // 180 s sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
-            await this.withClient(printer, async (c) => {
+            const upload = () => this.withClient(printer, async (c) => {
                 c.trackProgress((info) => progress(info.bytes, expected));
                 try {
                     await c.uploadFrom(createReadStream(tmp), remote);
@@ -211,6 +213,22 @@ export class FtpService {
                 const size = await c.size(remote).catch(() => null);
                 if (expected && size !== null && size !== expected) throw new Error(`La impresora quedó con ${size} bytes y se esperaban ${expected}`);
             }, 180_000);
+
+            try {
+                await upload();
+            } catch (err) {
+                if (String(err.code) !== '550') throw err;
+                // 550 = la impresora rechazó escribir ese archivo. Lo más común es un homónimo a medias de un envío cortado
+                // (queda bloqueado): se borra y se reintenta UNA vez. Si sigue, el motivo real es la SD o la impresora.
+                warn(`Puente: «${printer.name}» rechazó la subida de «${remote}» (${err.message}); borro el archivo anterior y reintento una vez`);
+                await this.withClient(printer, (c) => c.remove(remote).catch(() => {}));
+                try {
+                    await upload();
+                } catch (again) {
+                    if (String(again.code) !== '550') throw again;
+                    throw new Error(`La impresora rechazó guardar «${remote}» (${again.message}). Revisá que tenga tarjeta SD, que no esté llena ni protegida, y que no esté ocupada; si sigue, reiniciala.`);
+                }
+            }
             await progress(expected, expected, true);
 
             return {};
