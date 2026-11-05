@@ -14,6 +14,14 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.11 (beta) — 2026-11-05
+
+- Puente: `ftp.put` en **dos etapas**. Antes pasaba los bytes del server a la impresora en streaming, atado a la velocidad (y a los cortes) de
+  la descarga. Ahora baja el archivo entero a un temporal del puente, verifica el tamaño, y recién ahí lo sube por FTPS desde el disco; el temporal
+  se borra siempre. El avance informado es el de la subida a la impresora.
+- Puente: el timeout del FTPS de `ftp.put` pasa de 60 s a 180 s: al terminar los datos la A1/P1 tarda en grabar antes de contestar «226», y el
+  corte a los 60 s dejaba el envío en 99% con `Timeout (control socket)`.
+
 ## 1.1.10 (beta) — 2026-11-05
 
 - Puente: las transferencias de archivos (`ftp.put`/`ftp.get`) van **de a una en todo el puente**, no sólo por impresora. Dos subidas de 15 MB
