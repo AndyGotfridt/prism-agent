@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Client } from 'basic-ftp';
 import { log } from '../log.js';
 
@@ -173,33 +174,49 @@ export class FtpService {
         return { data: Buffer.concat(chunks).subarray(0, max).toString('base64') };
     }
 
-    /** Server → impresora: baja el archivo con el token y lo sube por FTPS, informando el avance. */
+    /**
+     * Server → impresora en DOS etapas: primero baja el archivo entero al puente (temporal), y recién ahí lo sube por
+     * FTPS desde el disco, a la velocidad de la red local. En una sola etapa (streaming) la impresora quedaba atada
+     * a la velocidad de la descarga: con el stream lento o cortado, el canal de control moría en `Timeout`. El avance
+     * que ve el usuario es el de la subida a la impresora (lo único lento e incierto); bajar al puente no informa.
+     */
     async put(printer, cmd, remote) {
         const api = this.getApi();
         if (!api) throw new Error('Sin conexión con el server');
         const token = String(cmd.payload?.token ?? '');
         if (!/^[A-Za-z0-9]{20,100}$/.test(token)) throw new Error('Token de archivo inválido');
 
-        const res = await api.request('GET', `/bridge/files/${token}`, { raw: true });
-        if (!res.ok || !res.body) throw new Error(`El server no entregó el archivo (HTTP ${res.status})`);
-        const expected = Number(cmd.payload?.size) || Number(res.headers.get('content-length')) || 0;
+        const tmp = join(tmpdir(), `prisma-bridge-put-${cmd.id}.part`);
+        try {
+            const res = await api.request('GET', `/bridge/files/${token}`, { raw: true });
+            if (!res.ok || !res.body) throw new Error(`El server no entregó el archivo (HTTP ${res.status})`);
+            const declared = Number(cmd.payload?.size) || Number(res.headers.get('content-length')) || 0;
 
-        const progress = this.progressReporter(api, cmd.id);
-        log(`Puente: subiendo «${remote}» a «${printer.name}» (${Math.round(expected / 1024 / 1024)} MB)`);
+            log(`Puente: bajando «${remote}» del server (${Math.round(declared / 1024 / 1024)} MB)`);
+            await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+            const expected = statSync(tmp).size;
+            if (declared && expected !== declared) throw new Error(`Se bajaron ${expected} bytes del server y se esperaban ${declared}`);
 
-        await this.withClient(printer, async (c) => {
-            c.trackProgress((info) => progress(info.bytes, expected));
-            try {
-                await c.uploadFrom(Readable.fromWeb(res.body), remote);
-            } finally {
-                c.trackProgress();
-            }
-            const size = await c.size(remote).catch(() => null);
-            if (expected && size !== null && size !== expected) throw new Error(`La impresora quedó con ${size} bytes y se esperaban ${expected}`);
-        }, 60_000);
-        await progress(expected, expected, true);
+            const progress = this.progressReporter(api, cmd.id);
+            log(`Puente: subiendo «${remote}» a «${printer.name}» (${Math.round(expected / 1024 / 1024)} MB)`);
 
-        return {};
+            // 180 s sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
+            await this.withClient(printer, async (c) => {
+                c.trackProgress((info) => progress(info.bytes, expected));
+                try {
+                    await c.uploadFrom(createReadStream(tmp), remote);
+                } finally {
+                    c.trackProgress();
+                }
+                const size = await c.size(remote).catch(() => null);
+                if (expected && size !== null && size !== expected) throw new Error(`La impresora quedó con ${size} bytes y se esperaban ${expected}`);
+            }, 180_000);
+            await progress(expected, expected, true);
+
+            return {};
+        } finally {
+            rmSync(tmp, { force: true });
+        }
     }
 
     /** Impresora → server: baja el archivo a un temporal y lo sube en partes de 32 MB con sha256. */
