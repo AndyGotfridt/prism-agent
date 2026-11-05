@@ -14,6 +14,10 @@ import { log } from '../log.js';
  * Reglas:
  * - Una operación FTPS por impresora a la vez: los servidores de las Bambu se atragantan con conexiones en
  *   paralelo. Lo que espera en la cola respeta el vencimiento del comando (si ya venció, no se ejecuta).
+ * - Las subidas y bajadas de archivos (`ftp.put`/`ftp.get`) van de a una en TODO el puente, no sólo por impresora:
+ *   dos de 15 MB a la vez por el mismo Wi-Fi/máquina dejaban a las dos con «Timeout (control socket)».
+ * - Mientras se transfiere un archivo la cámara de esa impresora queda en pausa (`CameraService.hold`): una A1/P1
+ *   saturada con FTPS + TLS de cámara + MQTT deja de contestar.
  * - `ftp.put` sólo escribe en la raíz (nombre plano). Ninguna ruta puede salirse con `..`.
  * - El access code no se loguea ni se escribe a disco.
  */
@@ -38,19 +42,42 @@ export function cleanRemote(name, { flat = false, allowEmpty = false } = {}) {
 class HeadDone extends Error {}
 
 export class FtpService {
-    /** @param {{ getApi: () => import('../api.js').Api | null }} hooks */
-    constructor({ getApi }) {
+    /** @param {{ getApi: () => import('../api.js').Api | null, camera?: import('./camera.js').CameraService }} hooks */
+    constructor({ getApi, camera }) {
         this.getApi = getApi;
+        this.camera = camera;
         this.chains = new Map(); // printer id → cola (promesa)
+        this.heavyTail = Promise.resolve(); // cola única de put/get de todas las impresoras
+    }
+
+    /** Una transferencia de archivo a la vez en todo el puente. */
+    exclusive(fn) {
+        const turn = this.heavyTail.then(fn);
+        this.heavyTail = turn.catch(() => {});
+
+        return turn;
     }
 
     /** Ejecuta un comando FTP de esa impresora, de a uno por vez. */
     run(printer, cmd) {
         const prev = this.chains.get(printer.id) ?? Promise.resolve();
-        const job = prev.catch(() => {}).then(() => {
+        const expired = () => {
             if (Date.now() > cmd.deadline) throw new Error('El comando venció esperando su turno en la cola de la impresora');
+        };
+        const heavy = cmd.type === 'ftp.put' || cmd.type === 'ftp.get';
+        const job = prev.catch(() => {}).then(() => {
+            expired();
+            if (!heavy) return this.execute(printer, cmd);
 
-            return this.execute(printer, cmd);
+            return this.exclusive(async () => {
+                expired(); // pudo vencer esperando la transferencia de la otra impresora
+                this.camera?.hold(printer.id);
+                try {
+                    return await this.execute(printer, cmd);
+                } finally {
+                    this.camera?.release(printer.id);
+                }
+            });
         });
         const tail = job.catch(() => {});
         this.chains.set(printer.id, tail);

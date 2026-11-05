@@ -48,7 +48,7 @@ export class Bridge {
             getApi,
             getLink: (id) => this.links.get(id),
             camera: this.camera,
-            ftp: new FtpService({ getApi }),
+            ftp: new FtpService({ getApi, camera: this.camera }),
             bellUp: () => this.realtime.connected,
             onForbidden: () => this.stop('el puente está apagado en el server'),
         });
