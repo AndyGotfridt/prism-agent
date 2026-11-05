@@ -14,6 +14,12 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.12 (beta) — 2026-11-05
+
+- Puente: ante un `550` de la impresora en `ftp.put` (rechazó escribir el archivo; típico de un homónimo a medias bloqueado tras un envío cortado)
+  borra el archivo remoto y reintenta **una vez**. Si vuelve a rechazar, el error explica las causas probables (SD ausente/llena/protegida,
+  impresora ocupada) en vez de mostrar sólo «550». `withClient` conserva el código FTP del error (`err.code`).
+
 ## 1.1.11 (beta) — 2026-11-05
 
 - Puente: `ftp.put` en **dos etapas**. Antes pasaba los bytes del server a la impresora en streaming, atado a la velocidad (y a los cortes) de
