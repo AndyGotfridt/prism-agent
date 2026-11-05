@@ -14,6 +14,17 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.9 (beta) — 2026-11-05
+
+- Actualización desde Prisma para los puentes (`GET /commands` trae `update: { auto, now }`):
+  - `auto` («Actualizar solo», por computadora): el agente trata la versión de su canal como obligatoria, o sea instala sin preguntar apenas no
+    tenga nada en curso. Antes, en un contenedor (sin ventanita) la pregunta nunca se contestaba y se posponía 24 h para siempre.
+  - `now` («Actualizar ahora» desde Administración → Prisma Agent → Puentes): marca de tiempo que se atiende una sola vez; relee `/config` y
+    cambia de versión sin preguntar (`handleUpdateCommand`).
+- Contenedor del puente (`PRISMA_AGENT_BRIDGE_ONLY=1` + `/.dockerenv`): después de instalar, el proceso termina y Docker lo relanza
+  (`restart: unless-stopped`); antes quedaba bajado pero sin usarse hasta reiniciar a mano. Con `PRISMA_VERSION` fijada en el contenedor el
+  entrypoint descarta el binario nuevo al reiniciar: dejarla vacía para actualizar solo.
+
 ## 1.1.8 (beta) — 2026-11-04
 
 - Se quita el servidor local de la balanza (`src/scale-local.js`, `127.0.0.1:47651`) que trajo la 1.1.7: dependía del permiso de «Red
