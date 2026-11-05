@@ -14,6 +14,13 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.10 (beta) — 2026-11-05
+
+- Puente: las transferencias de archivos (`ftp.put`/`ftp.get`) van **de a una en todo el puente**, no sólo por impresora. Dos subidas de 15 MB
+  a la vez dejaban a las dos A1 con `Timeout (control socket)` (y a veces «sin red» juntas).
+- Puente: mientras se transfiere un archivo, la cámara de esa impresora queda en pausa (`CameraService.hold/release`): el stream se corta,
+  `camera.watch` se ignora y `camera.snapshot` falla con «cámara en pausa». Una A1/P1 con FTPS + TLS de cámara + MQTT a la vez deja de contestar.
+
 ## 1.1.9 (beta) — 2026-11-05
 
 - Actualización desde Prisma para los puentes (`GET /commands` trae `update: { auto, now }`):
