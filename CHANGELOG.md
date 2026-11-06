@@ -14,6 +14,13 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.13 (beta) — 2026-11-06
+
+- Puente: cuando el MQTT de una impresora **no logra conectar**, el log ahora dice por qué:
+  `«Prisma» no conecta por MQTT (IP:8883): <motivo> [código]`, una línea por cambio de motivo (no una cada 5 s). Antes `mqtt-link.js`
+  reintentaba cada 5 s en silencio y sólo se logueaba perder una conexión ya establecida, así que una impresora con la cámara en vivo
+  pero «sin datos» (MQTT caído) no dejaba ninguna pista en el log. Sin cambios de comportamiento: sólo diagnóstico.
+
 ## 1.1.12 (beta) — 2026-11-05
 
 - Puente: ante un `550` de la impresora en `ftp.put` (rechazó escribir el archivo; típico de un homónimo a medias bloqueado tras un envío cortado)
