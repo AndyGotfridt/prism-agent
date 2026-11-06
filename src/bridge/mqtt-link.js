@@ -24,6 +24,7 @@ export class MqttLink {
         this.connected = false;
         this.lastReportAt = null; // ms
         this.error = null;
+        this.lastLoggedError = null; // último motivo de «no conecta» ya logueado
         this.wasOffline = false;
         this.waiters = new Set(); // pedidos esperando el ack de la impresora (`request`)
     }
@@ -43,6 +44,7 @@ export class MqttLink {
         this.client.on('connect', () => {
             this.connected = true;
             this.error = null;
+            this.lastLoggedError = null;
             log(`Puente: conectado a «${name}» (${ip})`);
             this.client.subscribe(`device/${serial}/report`, { qos: 0 }, (err) => {
                 if (err) this.error = `No se pudo suscribir: ${err.message}`;
@@ -81,6 +83,12 @@ export class MqttLink {
         this.client.on('error', (err) => {
             // Un access code mal cargado o la impresora apagada: se reintenta solo cada 5 s.
             this.error = /Not authorized|Bad username/i.test(err.message) ? 'Access code incorrecto' : err.code === 'ECONNREFUSED' || err.code === 'EHOSTUNREACH' || err.code === 'ETIMEDOUT' ? 'Apagada o fuera de la red' : err.message;
+            // Reintenta solo cada 5 s, pero sin este aviso el log no decía nunca POR QUÉ una impresora no conectaba (sólo se
+            // logueaba perder una conexión ya establecida). Una línea por cambio de motivo, no una cada 5 s.
+            if (!this.connected && this.error !== this.lastLoggedError) {
+                this.lastLoggedError = this.error;
+                warn(`Puente: «${name}» no conecta por MQTT (${ip}:8883): ${this.error}${err.code ? ` [${err.code}]` : ''}`);
+            }
         });
     }
 
