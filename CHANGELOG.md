@@ -14,6 +14,14 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.14 (beta) — 2026-11-06
+
+- Puente: **timeout en todos los pedidos a la API** (`Api.request`: 30 s; 5 min para subidas/bajadas de archivos y chunks). Antes
+  un `fetch` sobre una conexión a medias (Wi-Fi, suspensión, red de Docker) no volvía nunca y dejaba `Bridge.sending` y
+  `CommandRunner.polling` en `true` para siempre: sin latido (el server lo daba por caído a los 3 min) ni cola de comandos
+  (impresiones que cargaban y no iniciaban), mientras la cámara seguía andando por su propio camino. Ahora el pedido vence con un
+  `ApiError` reintentable («El servidor no contestó en N s») y el siguiente tick retoma solo.
+
 ## 1.1.13 (beta) — 2026-11-06
 
 - Puente: cuando el MQTT de una impresora **no logra conectar**, el log ahora dice por qué:
