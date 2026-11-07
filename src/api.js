@@ -3,6 +3,10 @@ import { autostartEnabled } from './autostart.js';
 import { updateChannel } from './prefs.js';
 import { VERSION } from './version.js';
 
+/** Tope de un pedido común y de uno con archivo (el cuerpo cuenta hasta leerse entero). */
+const REQUEST_TIMEOUT_MS = 30_000;
+const BULK_TIMEOUT_MS = 300_000;
+
 export const USER_AGENT = `PrismaAgent/${VERSION} (${platform()})`;
 
 /** Error de la API con el status HTTP. `retryable`: red caída, 5xx o 429. */
@@ -30,7 +34,7 @@ export class Api {
         return `${this.baseUrl}/api/agent/v1${path}`;
     }
 
-    async request(method, path, { json, body, headers = {}, raw = false, duplex } = {}) {
+    async request(method, path, { json, body, headers = {}, raw = false, duplex, timeoutMs } = {}) {
         const h = {
             'User-Agent': USER_AGENT,
             Accept: 'application/json',
@@ -48,10 +52,18 @@ export class Api {
             body = JSON.stringify(json);
         }
 
+        // Sin tope, una conexión a medias (Wi-Fi, suspensión, Docker) dejaba el await colgado para siempre y con
+        // él las banderas `sending`/`polling` del puente: sin latido ni comandos hasta reiniciar el agente.
+        // Las subidas/bajadas grandes (cuerpo en streaming o respuesta cruda) tienen más margen.
+        const limit = timeoutMs ?? (duplex || raw ? BULK_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
+
         let res;
         try {
-            res = await fetch(this.url(path), { method, headers: h, body, ...(duplex ? { duplex } : {}) });
+            res = await fetch(this.url(path), { method, headers: h, body, signal: AbortSignal.timeout(limit), ...(duplex ? { duplex } : {}) });
         } catch (err) {
+            if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+                throw new ApiError(`El servidor no contestó en ${Math.round(limit / 1000)} s (${method} ${path}).`, { retryable: true });
+            }
             const cause = err.cause?.code ?? err.cause?.message ?? err.message;
             const hint = /CERT|SELF_SIGNED|UNABLE_TO_VERIFY/i.test(String(cause))
                 ? process.platform === 'win32'
@@ -100,7 +112,7 @@ export class Api {
     }
 
     put(path, body, opts = {}) {
-        return this.request('PUT', path, { ...opts, body, headers: { 'Content-Type': 'application/octet-stream', ...(opts.headers ?? {}) } });
+        return this.request('PUT', path, { timeoutMs: BULK_TIMEOUT_MS, ...opts, body, headers: { 'Content-Type': 'application/octet-stream', ...(opts.headers ?? {}) } });
     }
 
     /**
