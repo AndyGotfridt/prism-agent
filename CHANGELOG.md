@@ -14,6 +14,14 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.15 (beta) — 2026-11-08
+
+- Puente: `ftp.put` ya no queda colgado cuando la impresora deja de recibir datos. **Perro guardián**: sin un solo byte nuevo en 60 s se
+  cierra la conexión y falla con un mensaje claro (antes retenía la cola única de transferencias y la cámara de esa impresora hasta los
+  180 s del control, y el server ya lo había dado por muerto a los 90 s: «dejó de informar avance»).
+- **Latido cada 15 s** durante la subida (mismo `/progress` con lo último conocido), para que la espera legítima del «226» (la impresora
+  graba el archivo) no se tome como envío muerto. Logs por etapa: conectado por FTPS / enviado, verificando tamaño.
+
 ## 1.1.14 (beta) — 2026-11-06
 
 - Puente: **timeout en todos los pedidos a la API** (`Api.request`: 30 s; 5 min para subidas/bajadas de archivos y chunks). Antes
