@@ -24,6 +24,8 @@ import { log, warn } from '../log.js';
  */
 const CHUNK_BYTES = 32 * 1024 * 1024; // Cloudflare corta en 100 MB; mismas partes que «Por importar»
 const MAX_HEAD_BYTES = 8 * 1024 * 1024;
+const STALL_MS = 60_000; // sin bytes nuevos durante la subida a la impresora: se corta
+
 
 /** Ruta remota segura: sin `..`, sin barras invertidas ni bytes raros. `flat` = sin carpetas (subidas). */
 export function cleanRemote(name, { flat = false, allowEmpty = false } = {}) {
@@ -204,12 +206,37 @@ export class FtpService {
 
             // 180 s sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
             const upload = () => this.withClient(printer, async (c) => {
-                c.trackProgress((info) => progress(info.bytes, expected));
+                // Latido: el server da por muerto un envío tras 90 s sin avance, y la impresora puede tardar más que eso en
+                // grabar el archivo antes de contestar «226». Se avisa cada 15 s con lo último que se sabe.
+                let sent = 0;
+                let lastBytesAt = Date.now();
+                let stalled = false;
+                log(`Puente: conectado a «${printer.name}» por FTPS, empieza la subida de «${remote}»`);
+                const beat = setInterval(() => progress(sent, expected, true), 15_000);
+                // Perro guardián: sin un solo byte nuevo en 60 s la subida se corta (si no, la cola única de transferencias y
+                // la cámara de esa impresora quedan trabadas hasta los 180 s del control, o para siempre si el socket no avisa).
+                const dog = setInterval(() => {
+                    if (sent < expected && Date.now() - lastBytesAt > STALL_MS) {
+                        stalled = true;
+                        c.close();
+                    }
+                }, 5_000);
+                c.trackProgress((info) => {
+                    if (info.bytes > sent) lastBytesAt = Date.now();
+                    sent = info.bytes;
+                    progress(info.bytes, expected);
+                });
                 try {
                     await c.uploadFrom(createReadStream(tmp), remote);
+                } catch (err) {
+                    if (stalled) throw new Error(`La impresora dejó de recibir datos a los ${sent} de ${expected} bytes (sin avance por ${STALL_MS / 1000} s). Revisá el Wi-Fi de la impresora o reiniciala.`);
+                    throw err;
                 } finally {
+                    clearInterval(beat);
+                    clearInterval(dog);
                     c.trackProgress();
                 }
+                log(`Puente: «${remote}» enviado a «${printer.name}», verificando tamaño`);
                 const size = await c.size(remote).catch(() => null);
                 if (expected && size !== null && size !== expected) throw new Error(`La impresora quedó con ${size} bytes y se esperaban ${expected}`);
             }, 180_000);
