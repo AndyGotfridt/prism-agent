@@ -14,6 +14,14 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.18 (beta) — 2026-11-09
+
+- Puente: más paciencia al subir a la impresora. Tras el último byte de un `ftp.put` la A1 descomprime/graba el 3MF antes de contestar «226» y puede
+  tardar más de 3 min (con la pantalla lenta o colgada y sin atender MQTT). El timeout del canal de control pasó de 180 s a 5 min
+  (`CONTROL_TIMEOUT_PUT_MS`) y el tope duro de `ftp.put`/`ftp.get` de 6 a 9 min, para que no corte antes que el control.
+- Motivo: en la prueba del 09/11 una subida de 1 MB a «Prisma» llegó al 100% y murió con «Timeout (control socket)» a los 3 min sin que el
+  archivo se grabara; la impresora dejó de reportar por MQTT mientras duró. Si sigue pasando con 5 min, la causa es otra (ver el log del puente).
+
 ## 1.1.17 (beta) — 2026-11-09
 
 - Puente: tope duro por comando FTP (`FtpService.withHardLimit`): 6 min para `ftp.put`/`ftp.get` y 90 s para el resto. Corre con `Promise.race`,
