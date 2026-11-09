@@ -25,6 +25,10 @@ import { log, warn } from '../log.js';
 const CHUNK_BYTES = 32 * 1024 * 1024; // Cloudflare corta en 100 MB; mismas partes que «Por importar»
 const MAX_HEAD_BYTES = 8 * 1024 * 1024;
 const STALL_MS = 60_000; // sin bytes nuevos durante la subida a la impresora: se corta
+// Tope duro por comando, pase lo que pase con la librería FTP: si una transferencia no termina, se cierra el cliente y se
+// libera la cola (si no, un solo put colgado traba TODAS las transferencias y las cámaras hasta reiniciar el puente).
+const HARD_LIMIT_HEAVY_MS = 6 * 60_000;
+const HARD_LIMIT_LIGHT_MS = 90_000;
 
 
 /** Ruta remota segura: sin `..`, sin barras invertidas ni bytes raros. `flat` = sin carpetas (subidas). */
@@ -50,6 +54,7 @@ export class FtpService {
         this.getApi = getApi;
         this.camera = camera;
         this.chains = new Map(); // printer id → cola (promesa)
+        this.clients = new Map(); // printer id → clientes FTP abiertos (para cortarlos si el comando pasa el tope duro)
         this.heavyTail = Promise.resolve(); // cola única de put/get de todas las impresoras
     }
 
@@ -70,14 +75,14 @@ export class FtpService {
         const heavy = cmd.type === 'ftp.put' || cmd.type === 'ftp.get';
         const job = prev.catch(() => {}).then(() => {
             expired();
-            if (!heavy) return this.withCameraHeld(printer, () => this.execute(printer, cmd));
+            if (!heavy) return this.withCameraHeld(printer, () => this.withHardLimit(printer, cmd, HARD_LIMIT_LIGHT_MS, () => this.execute(printer, cmd)));
 
             return this.exclusive(async () => {
                 expired(); // pudo vencer esperando la transferencia de la otra impresora
                 // Una transferencia a la vez: se cortan las cámaras de TODAS las impresoras, no sólo la de ésta.
                 this.camera?.holdAll();
                 try {
-                    return await this.withCameraHeld(printer, () => this.execute(printer, cmd));
+                    return await this.withCameraHeld(printer, () => this.withHardLimit(printer, cmd, HARD_LIMIT_HEAVY_MS, () => this.execute(printer, cmd)));
                 } finally {
                     this.camera?.releaseAll();
                 }
@@ -90,6 +95,29 @@ export class FtpService {
         });
 
         return job;
+    }
+
+    /**
+     * Corre `fn` con un tope de tiempo que NO depende de que la librería FTP rechace su promesa: al vencer se cierran los
+     * clientes abiertos de la impresora y se devuelve un error, así la cola y las pausas de cámara se liberan siempre.
+     */
+    async withHardLimit(printer, cmd, ms, fn) {
+        let timer;
+        const limit = new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                warn(`Puente: ${cmd.type} #${cmd.id} a «${printer.name}» pasó el tope de ${Math.round(ms / 1000)} s; corto la conexión y libero la cola`);
+                for (const client of this.clients.get(printer.id) ?? []) client.close();
+                reject(new Error(`La impresora no terminó la operación en ${Math.round(ms / 1000)} s (se cortó la conexión). Reintentá; si sigue, reiniciala.`));
+            }, ms);
+        });
+        const work = fn();
+        work.catch(() => {}); // si el tope gana, el error tardío de `work` no queda sin atender
+
+        try {
+            return await Promise.race([work, limit]);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     /** Corta la cámara de esa impresora mientras dure un comando FTP (el `ftp.size` previo a un envío ya la molestaba). */
@@ -147,6 +175,9 @@ export class FtpService {
     /** Una conexión FTPS por operación, siempre cerrada. */
     async withClient(printer, fn, timeoutMs = 30_000) {
         const client = new Client(timeoutMs);
+        const open = this.clients.get(printer.id) ?? new Set();
+        open.add(client);
+        this.clients.set(printer.id, open);
         try {
             await client.access({
                 host: printer.lan_ip,
@@ -164,6 +195,8 @@ export class FtpService {
             throw wrapped;
         } finally {
             client.close();
+            open.delete(client);
+            if (open.size === 0 && this.clients.get(printer.id) === open) this.clients.delete(printer.id);
         }
     }
 
