@@ -17,8 +17,8 @@ import { log, warn } from '../log.js';
  *   paralelo. Lo que espera en la cola respeta el vencimiento del comando (si ya venció, no se ejecuta).
  * - Las subidas y bajadas de archivos (`ftp.put`/`ftp.get`) van de a una en TODO el puente, no sólo por impresora:
  *   dos de 15 MB a la vez por el mismo Wi-Fi/máquina dejaban a las dos con «Timeout (control socket)».
- * - Mientras se transfiere un archivo la cámara de esa impresora queda en pausa (`CameraService.hold`): una A1/P1
- *   saturada con FTPS + TLS de cámara + MQTT deja de contestar.
+ * - Mientras corre un comando FTP la cámara de esa impresora queda en pausa (`CameraService.hold`) y durante un
+ *   `ftp.put`/`ftp.get` se pausan las de todas (`holdAll`): una A1/P1 saturada con FTPS + TLS de cámara + MQTT deja de contestar.
  * - `ftp.put` sólo escribe en la raíz (nombre plano). Ninguna ruta puede salirse con `..`.
  * - El access code no se loguea ni se escribe a disco.
  */
@@ -70,15 +70,16 @@ export class FtpService {
         const heavy = cmd.type === 'ftp.put' || cmd.type === 'ftp.get';
         const job = prev.catch(() => {}).then(() => {
             expired();
-            if (!heavy) return this.execute(printer, cmd);
+            if (!heavy) return this.withCameraHeld(printer, () => this.execute(printer, cmd));
 
             return this.exclusive(async () => {
                 expired(); // pudo vencer esperando la transferencia de la otra impresora
-                this.camera?.hold(printer.id);
+                // Una transferencia a la vez: se cortan las cámaras de TODAS las impresoras, no sólo la de ésta.
+                this.camera?.holdAll();
                 try {
-                    return await this.execute(printer, cmd);
+                    return await this.withCameraHeld(printer, () => this.execute(printer, cmd));
                 } finally {
-                    this.camera?.release(printer.id);
+                    this.camera?.releaseAll();
                 }
             });
         });
@@ -89,6 +90,16 @@ export class FtpService {
         });
 
         return job;
+    }
+
+    /** Corta la cámara de esa impresora mientras dure un comando FTP (el `ftp.size` previo a un envío ya la molestaba). */
+    async withCameraHeld(printer, fn) {
+        this.camera?.hold(printer.id);
+        try {
+            return await fn();
+        } finally {
+            this.camera?.release(printer.id);
+        }
     }
 
     async execute(printer, cmd) {

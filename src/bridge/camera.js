@@ -122,22 +122,40 @@ export class CameraService {
     constructor({ getApi }) {
         this.getApi = getApi;
         this.sessions = new Map(); // printer id → { until, ctl }
-        this.held = new Set(); // impresoras con una transferencia de archivo en curso: sin cámara
+        this.held = new Map(); // impresora → pausas abiertas (con contador: comandos FTP que se solapan no se pisan)
+        this.heldAll = 0; // pausas de TODAS las cámaras (transferencia pesada en cualquier impresora)
+    }
+
+    /** ¿La cámara de esa impresora está en pausa? */
+    isHeld(printerId) {
+        return this.heldAll > 0 || (this.held.get(printerId) ?? 0) > 0;
     }
 
     /** Corta la cámara de esa impresora y rechaza abrirla hasta `release` (mientras sube/baja un archivo). */
     hold(printerId) {
-        this.held.add(printerId);
+        this.held.set(printerId, (this.held.get(printerId) ?? 0) + 1);
         this.sessions.get(printerId)?.ctl.abort();
     }
 
     release(printerId) {
-        this.held.delete(printerId);
+        const left = (this.held.get(printerId) ?? 0) - 1;
+        if (left > 0) this.held.set(printerId, left);
+        else this.held.delete(printerId);
+    }
+
+    /** Corta todas las cámaras del puente: una A1/P1 con FTPS + cámara + MQTT deja de contestar, y el Wi-Fi/máquina es uno solo. */
+    holdAll() {
+        this.heldAll++;
+        for (const session of this.sessions.values()) session.ctl.abort();
+    }
+
+    releaseAll() {
+        this.heldAll = Math.max(0, this.heldAll - 1);
     }
 
     /** Empieza (o extiende) el stream de una impresora durante `seconds`. */
     watch(printer, seconds) {
-        if (this.held.has(printer.id)) return; // transfiriendo un archivo: el server vuelve a pedirla después
+        if (this.isHeld(printer.id)) return; // transfiriendo un archivo: el server vuelve a pedirla después
         const until = Date.now() + Math.min(300, Math.max(5, seconds)) * 1000;
         const current = this.sessions.get(printer.id);
         if (current) {
@@ -210,7 +228,7 @@ export class CameraService {
 
     /** `camera.snapshot`: un frame suelto subido con el id del comando (el server lo acepta aunque nadie mire). */
     async snapshot(printer, commandId) {
-        if (this.held.has(printer.id)) throw new Error('La impresora está recibiendo un archivo: cámara en pausa');
+        if (this.isHeld(printer.id)) throw new Error('El puente está transfiriendo un archivo: cámara en pausa');
         const jpeg = await snapshotOnce(printer);
         await this.upload(printer, jpeg, commandId);
 
