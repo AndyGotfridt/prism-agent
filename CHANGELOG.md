@@ -14,6 +14,16 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.16 (beta) — 2026-11-09
+
+- Puente: las cámaras se cortan antes y durante los envíos de archivos. Cada comando `ftp.*` pausa la cámara de su impresora (antes sólo
+  `ftp.put`/`ftp.get`, y el `ftp.size` previo a un envío la encontraba viva) y `ftp.put`/`ftp.get` pausan las de **todas** las
+  impresoras del puente (`CameraService.holdAll`/`releaseAll`), porque hay una sola transferencia a la vez y un solo Wi-Fi/máquina.
+- `CameraService`: las pausas pasan de `Set` a contador por impresora (`hold`/`release`) más un contador global, para que comandos FTP
+  que se solapan no se suelten unos a otros. `watch` y `snapshot` consultan `isHeld()`.
+- Motivo: tras un envío el siguiente no arrancaba sin reiniciar el puente (subida que empieza y no termina, con las cámaras de las dos
+  impresoras reconectando cada ~13 s). Causa no confirmada: esta beta es para probarlo.
+
 ## 1.1.15 (beta) — 2026-11-08
 
 - Puente: `ftp.put` ya no queda colgado cuando la impresora deja de recibir datos. **Perro guardián**: sin un solo byte nuevo en 60 s se

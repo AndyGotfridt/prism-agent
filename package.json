@@ -1,7 +1,7 @@
 {
   "name": "prisma-agent",
   "productName": "Prisma Sync",
-  "version": "1.1.15",
+  "version": "1.1.16",
   "description": "Prisma Sync",
   "private": true,
   "type": "module",
