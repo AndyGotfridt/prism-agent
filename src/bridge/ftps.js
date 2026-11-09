@@ -27,8 +27,10 @@ const MAX_HEAD_BYTES = 8 * 1024 * 1024;
 const STALL_MS = 60_000; // sin bytes nuevos durante la subida a la impresora: se corta
 // Tope duro por comando, pase lo que pase con la librería FTP: si una transferencia no termina, se cierra el cliente y se
 // libera la cola (si no, un solo put colgado traba TODAS las transferencias y las cámaras hasta reiniciar el puente).
-const HARD_LIMIT_HEAVY_MS = 6 * 60_000;
+const HARD_LIMIT_HEAVY_MS = 9 * 60_000;
 const HARD_LIMIT_LIGHT_MS = 90_000;
+// Tras el último byte la impresora tarda en grabar/descomprimir antes de contestar «226»; una A1 con un 3MF pesado pasa de 3 min.
+const CONTROL_TIMEOUT_PUT_MS = 5 * 60_000;
 
 
 /** Ruta remota segura: sin `..`, sin barras invertidas ni bytes raros. `flat` = sin carpetas (subidas). */
@@ -248,7 +250,7 @@ export class FtpService {
             const progress = this.progressReporter(api, cmd.id);
             log(`Puente: subiendo «${remote}» a «${printer.name}» (${Math.round(expected / 1024 / 1024)} MB)`);
 
-            // 180 s sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
+            // 5 min sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
             const upload = () => this.withClient(printer, async (c) => {
                 // Latido: el server da por muerto un envío tras 90 s sin avance, y la impresora puede tardar más que eso en
                 // grabar el archivo antes de contestar «226». Se avisa cada 15 s con lo último que se sabe.
@@ -283,7 +285,7 @@ export class FtpService {
                 log(`Puente: «${remote}» enviado a «${printer.name}», verificando tamaño`);
                 const size = await c.size(remote).catch(() => null);
                 if (expected && size !== null && size !== expected) throw new Error(`La impresora quedó con ${size} bytes y se esperaban ${expected}`);
-            }, 180_000);
+            }, CONTROL_TIMEOUT_PUT_MS);
 
             try {
                 await upload();
