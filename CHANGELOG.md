@@ -14,6 +14,15 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.17 (beta) — 2026-11-09
+
+- Puente: tope duro por comando FTP (`FtpService.withHardLimit`): 6 min para `ftp.put`/`ftp.get` y 90 s para el resto. Corre con `Promise.race`,
+  sin depender de que `basic-ftp` rechace su promesa: al vencer cierra los clientes abiertos de esa impresora (`FtpService.clients`), devuelve un error
+  claro y libera la cola única de transferencias (`exclusive`) y las pausas de cámara.
+- Motivo: un `ftp.put` colgado (la subida «empieza» y no termina) dejaba trabada la cola para siempre y el puente no volvía a transferir hasta
+  reiniciarlo. El perro guardián de 60 s de 1.1.15 no alcanzó en ese caso. La causa de fondo del cuelgue sigue sin confirmarse; si el tope
+  salta, queda en el log («pasó el tope de … s») para investigarla.
+
 ## 1.1.16 (beta) — 2026-11-09
 
 - Puente: las cámaras se cortan antes y durante los envíos de archivos. Cada comando `ftp.*` pausa la cámara de su impresora (antes sólo
