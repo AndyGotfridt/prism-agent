@@ -48,12 +48,7 @@ export class Bridge {
             getApi,
             getLink: (id) => this.links.get(id),
             camera: this.camera,
-            ftp: new FtpService({
-                getApi,
-                camera: this.camera,
-                // Subiendo un archivo, la A1/P1 no da abasto con el pushall además del FTPS: se pausa mientras dure.
-                quiet: (on) => { for (const link of this.links.values()) link.quiet(on); },
-            }),
+            ftp: new FtpService({ getApi, camera: this.camera }),
             bellUp: () => this.realtime.connected,
             onForbidden: () => this.stop('el puente está apagado en el server'),
         });

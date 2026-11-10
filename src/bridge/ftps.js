@@ -51,11 +51,10 @@ export function cleanRemote(name, { flat = false, allowEmpty = false } = {}) {
 class HeadDone extends Error {}
 
 export class FtpService {
-    /** @param {{ getApi: () => import('../api.js').Api | null, camera?: import('./camera.js').CameraService, quiet?: (on: boolean) => void }} hooks */
-    constructor({ getApi, camera, quiet }) {
+    /** @param {{ getApi: () => import('../api.js').Api | null, camera?: import('./camera.js').CameraService }} hooks */
+    constructor({ getApi, camera }) {
         this.getApi = getApi;
         this.camera = camera;
-        this.quiet = quiet ?? (() => {}); // pausa/reanuda el `pushall` MQTT de las impresoras durante una transferencia
         this.chains = new Map(); // printer id → cola (promesa)
         this.clients = new Map(); // printer id → clientes FTP abiertos (para cortarlos si el comando pasa el tope duro)
         this.heavyTail = Promise.resolve(); // cola única de put/get de todas las impresoras
@@ -84,11 +83,9 @@ export class FtpService {
                 expired(); // pudo vencer esperando la transferencia de la otra impresora
                 // Una transferencia a la vez: se cortan las cámaras de TODAS las impresoras, no sólo la de ésta.
                 this.camera?.holdAll();
-                this.quiet(true);
                 try {
                     return await this.withCameraHeld(printer, () => this.withHardLimit(printer, cmd, HARD_LIMIT_HEAVY_MS, () => this.execute(printer, cmd)));
                 } finally {
-                    this.quiet(false);
                     this.camera?.releaseAll();
                 }
             });
