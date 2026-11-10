@@ -14,6 +14,10 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.20 (beta) — 2026-11-09
+
+- Puente: se saca la pausa del `pushall` MQTT durante las transferencias (1.1.19): era una hipótesis sin evidencia y dejaba a las otras impresoras sin estado. Se mantiene el resto de la 1.1.19.
+
 ## 1.1.19 (beta) — 2026-11-09
 
 - Puente: el progreso del envío informa dos pasos (`phase` en `POST /bridge/commands/{id}/progress`): `download` (server → puente) y `upload` (puente → impresora).
