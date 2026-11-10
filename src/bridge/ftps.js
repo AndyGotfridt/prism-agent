@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable, Writable } from 'node:stream';
+import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Client } from 'basic-ftp';
 import { log, warn } from '../log.js';
@@ -51,10 +51,11 @@ export function cleanRemote(name, { flat = false, allowEmpty = false } = {}) {
 class HeadDone extends Error {}
 
 export class FtpService {
-    /** @param {{ getApi: () => import('../api.js').Api | null, camera?: import('./camera.js').CameraService }} hooks */
-    constructor({ getApi, camera }) {
+    /** @param {{ getApi: () => import('../api.js').Api | null, camera?: import('./camera.js').CameraService, quiet?: (on: boolean) => void }} hooks */
+    constructor({ getApi, camera, quiet }) {
         this.getApi = getApi;
         this.camera = camera;
+        this.quiet = quiet ?? (() => {}); // pausa/reanuda el `pushall` MQTT de las impresoras durante una transferencia
         this.chains = new Map(); // printer id → cola (promesa)
         this.clients = new Map(); // printer id → clientes FTP abiertos (para cortarlos si el comando pasa el tope duro)
         this.heavyTail = Promise.resolve(); // cola única de put/get de todas las impresoras
@@ -83,9 +84,11 @@ export class FtpService {
                 expired(); // pudo vencer esperando la transferencia de la otra impresora
                 // Una transferencia a la vez: se cortan las cámaras de TODAS las impresoras, no sólo la de ésta.
                 this.camera?.holdAll();
+                this.quiet(true);
                 try {
                     return await this.withCameraHeld(printer, () => this.withHardLimit(printer, cmd, HARD_LIMIT_HEAVY_MS, () => this.execute(printer, cmd)));
                 } finally {
+                    this.quiet(false);
                     this.camera?.releaseAll();
                 }
             });
@@ -228,7 +231,7 @@ export class FtpService {
      * Server → impresora en DOS etapas: primero baja el archivo entero al puente (temporal), y recién ahí lo sube por
      * FTPS desde el disco, a la velocidad de la red local. En una sola etapa (streaming) la impresora quedaba atada
      * a la velocidad de la descarga: con el stream lento o cortado, el canal de control moría en `Timeout`. El avance
-     * que ve el usuario es el de la subida a la impresora (lo único lento e incierto); bajar al puente no informa.
+     * se informa en las dos etapas (`phase`: `download` = server → puente, `upload` = puente → impresora) para que la web muestre el paso 1 y el 2.
      */
     async put(printer, cmd, remote) {
         const api = this.getApi();
@@ -243,11 +246,22 @@ export class FtpService {
             const declared = Number(cmd.payload?.size) || Number(res.headers.get('content-length')) || 0;
 
             log(`Puente: bajando «${remote}» del server (${Math.round(declared / 1024 / 1024)} MB)`);
-            await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+            const downProgress = this.progressReporter(api, cmd.id, 'download');
+            await downProgress(0, declared, true);
+            let got = 0;
+            const counter = new Transform({
+                transform(chunk, _enc, cb) {
+                    got += chunk.length;
+                    downProgress(got, declared);
+                    cb(null, chunk);
+                },
+            });
+            await pipeline(Readable.fromWeb(res.body), counter, createWriteStream(tmp));
             const expected = statSync(tmp).size;
             if (declared && expected !== declared) throw new Error(`Se bajaron ${expected} bytes del server y se esperaban ${declared}`);
 
-            const progress = this.progressReporter(api, cmd.id);
+            const progress = this.progressReporter(api, cmd.id, 'upload');
+            await progress(0, expected, true);
             log(`Puente: subiendo «${remote}» a «${printer.name}» (${Math.round(expected / 1024 / 1024)} MB)`);
 
             // 5 min sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
@@ -348,7 +362,7 @@ export class FtpService {
     }
 
     /** Avance al server como mucho una vez por segundo (`force` manda el último sí o sí). */
-    progressReporter(api, commandId) {
+    progressReporter(api, commandId, phase = null) {
         let last = 0;
 
         return async (done, total, force = false) => {
@@ -356,7 +370,7 @@ export class FtpService {
             if (!force && now - last < 1_000) return;
             last = now;
             try {
-                await api.post(`/bridge/commands/${commandId}/progress`, { done: Math.max(0, Math.floor(done)), total: Math.max(0, Math.floor(total)) });
+                await api.post(`/bridge/commands/${commandId}/progress`, { done: Math.max(0, Math.floor(done)), total: Math.max(0, Math.floor(total)), ...(phase ? { phase } : {}) });
             } catch {
                 // el avance es cosmético: no corta la transferencia
             }

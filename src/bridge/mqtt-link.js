@@ -26,6 +26,7 @@ export class MqttLink {
         this.error = null;
         this.lastLoggedError = null; // último motivo de «no conecta» ya logueado
         this.wasOffline = false;
+        this.quietCount = 0; // transferencias de archivos en curso: sin pushall
         this.waiters = new Set(); // pedidos esperando el ack de la impresora (`request`)
     }
 
@@ -92,8 +93,14 @@ export class MqttLink {
         });
     }
 
+    /** Pausa/reanuda el pushall periódico (con contador: las transferencias no se pisan). Al reanudar pide un estado completo. */
+    quiet(on) {
+        this.quietCount = on ? this.quietCount + 1 : Math.max(0, this.quietCount - 1);
+        if (!on && this.quietCount === 0) this.pushAll();
+    }
+
     pushAll() {
-        if (!this.client?.connected) return;
+        if (!this.client?.connected || this.quietCount > 0) return;
         this.client.publish(
             `device/${this.printer.serial}/request`,
             JSON.stringify({ pushing: { sequence_id: String(Math.floor(Date.now() / 1000)), command: 'pushall', version: 1, push_target: 1 } }),

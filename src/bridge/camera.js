@@ -171,7 +171,7 @@ export class CameraService {
     }
 
     async run(printer, session) {
-        log(`Puente: cámara de «${printer.name}» en vivo`);
+        let live = false; // «en vivo» sólo cuando llega el primer frame (antes se anunciaba al abrir, aunque la cámara no contestara)
         let lastUp = 0;
         let uploading = false;
         let backoff = 2_000;
@@ -180,6 +180,10 @@ export class CameraService {
             try {
                 await streamFrames(printer, (jpeg) => {
                     backoff = 2_000;
+                    if (!live) {
+                        live = true;
+                        log(`Puente: cámara de «${printer.name}» en vivo`);
+                    }
                     if (Date.now() >= session.until) return false;
                     const now = Date.now();
                     // 1 fps y de a un POST: si el anterior sigue en vuelo, este frame se descarta.
@@ -206,7 +210,7 @@ export class CameraService {
             await new Promise((r) => setTimeout(r, backoff));
             backoff = Math.min(15_000, backoff * 2);
         }
-        log(`Puente: cámara de «${printer.name}» cortada`);
+        if (live) log(`Puente: cámara de «${printer.name}» cortada`);
     }
 
     /** @returns {Promise<boolean>} false si el server ya no quiere frames (409) */

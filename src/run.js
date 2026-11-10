@@ -376,6 +376,15 @@ class Agent {
             }
             await this.bridge.sync(bridge);
             this.handleUpdateCommand(updateCommand);
+            // Contenedor del puente: sólo puente (y actualizar/ver log). Nada de carpetas, avisos de escritorio ni selector.
+            if (BRIDGE_ONLY) {
+                pick = undefined;
+                demo = undefined;
+                counts = undefined;
+                autostart = undefined;
+                alerts = undefined;
+                driveSync = undefined;
+            }
             // Carpetas → Drive: si cambió el conjunto en la web, se relee /config sin esperar los 5 min;
             // y «Sincronizar ahora» pedidos desde Mi perfil.
             if (driveSync) {

@@ -12,6 +12,8 @@ import { progressSupported, showMessage } from './progress-ui.js';
  * se queda la ventanita (ms; 0 sin ventanita).
  */
 export function notify(title, message, tone = 'info', action = null, { image = null } = {}) {
+    // Puente en un contenedor/servidor: nadie mira el escritorio; queda en el log.
+    if (process.env.PRISMA_AGENT_BRIDGE_ONLY === '1') return 0;
     if (progressSupported()) {
         return showMessage(title, message, tone, action, { image });
     }

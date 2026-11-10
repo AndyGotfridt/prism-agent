@@ -136,6 +136,7 @@ export class CommandRunner {
         switch (cmd.type) {
             case 'camera.watch':
                 if (!link.printer.camera) throw new Error('Esa impresora no tiene cámara soportada');
+                if (!link.connected) throw new Error('La impresora no está conectada al puente (apagada o fuera de la red)');
                 this.camera.watch(link.printer, Number(cmd.payload?.seconds) || 60);
 
                 return {};
