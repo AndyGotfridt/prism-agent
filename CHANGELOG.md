@@ -14,6 +14,13 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.19 (beta) — 2026-11-09
+
+- Puente: el progreso del envío informa dos pasos (`phase` en `POST /bridge/commands/{id}/progress`): `download` (server → puente) y `upload` (puente → impresora).
+- Puente: durante `ftp.put`/`ftp.get` se pausa el `pushall` MQTT de todas las impresoras (`MqttLink.quiet()`); al terminar pide un estado completo. Una A1 con FTPS + MQTT + cámara dejaba de contestar.
+- Puente: la cámara loguea «en vivo» recién con el primer frame (antes al abrir la sesión) y `camera.watch` falla si la impresora no está conectada por MQTT.
+- Modo sólo puente (`PRISMA_AGENT_BRIDGE_ONLY=1`): `notify()` no hace nada y se descartan avisos de escritorio, selector de carpeta, demo, contadores y Drive que llegan de `/commands`.
+
 ## 1.1.18 (beta) — 2026-11-09
 
 - Puente: más paciencia al subir a la impresora. Tras el último byte de un `ftp.put` la A1 descomprime/graba el 3MF antes de contestar «226» y puede
