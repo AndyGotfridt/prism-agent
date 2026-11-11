@@ -14,6 +14,12 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.21 (beta) — 2026-11-11
+
+- Puente: si `ftp.put` da `Timeout (control socket)` (la A1 no contestó el «226» tras el último byte), antes de fallar se le pregunta el
+  tamaño del archivo con una conexión nueva (hasta 6 veces, cada 10 s, `FtpService.arrivedIntact`). Si está completo se da el envío por
+  hecho y sigue con el comando de imprimir; si no, falla como siempre. Visto 11/11: el archivo había llegado y hubo que reiniciar y reenviar.
+
 ## 1.1.20 (beta) — 2026-11-09
 
 - Puente: se saca la pausa del `pushall` MQTT durante las transferencias (1.1.19): era una hipótesis sin evidencia y dejaba a las otras impresoras sin estado. Se mantiene el resto de la 1.1.19.
