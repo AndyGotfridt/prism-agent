@@ -31,6 +31,10 @@ const HARD_LIMIT_HEAVY_MS = 9 * 60_000;
 const HARD_LIMIT_LIGHT_MS = 90_000;
 // Tras el último byte la impresora tarda en grabar/descomprimir antes de contestar «226»; una A1 con un 3MF pesado pasa de 3 min.
 const CONTROL_TIMEOUT_PUT_MS = 5 * 60_000;
+// Si el «226» no llega, el archivo suele haber quedado bien guardado igual: se le pregunta el tamaño a la impresora con una
+// conexión nueva (a veces sigue ocupada grabando, de ahí los reintentos) antes de dar el envío por fallido.
+const ARRIVAL_CHECK_TRIES = 6;
+const ARRIVAL_CHECK_EVERY_MS = 10_000;
 
 
 /** Ruta remota segura: sin `..`, sin barras invertidas ni bytes raros. `flat` = sin carpetas (subidas). */
@@ -301,16 +305,12 @@ export class FtpService {
             try {
                 await upload();
             } catch (err) {
-                if (String(err.code) !== '550') throw err;
-                // 550 = la impresora rechazó escribir ese archivo. Lo más común es un homónimo a medias de un envío cortado
-                // (queda bloqueado): se borra y se reintenta UNA vez. Si sigue, el motivo real es la SD o la impresora.
-                warn(`Puente: «${printer.name}» rechazó la subida de «${remote}» (${err.message}); borro el archivo anterior y reintento una vez`);
-                await this.withClient(printer, (c) => c.remove(remote).catch(() => {}));
-                try {
-                    await upload();
-                } catch (again) {
-                    if (String(again.code) !== '550') throw again;
-                    throw new Error(`La impresora rechazó guardar «${remote}» (${again.message}). Revisá que tenga tarjeta SD, que no esté llena ni protegida, y que no esté ocupada; si sigue, reiniciala.`);
+                if (/timeout/i.test(String(err.message)) && (await this.arrivedIntact(printer, remote, expected))) {
+                    warn(`Puente: «${printer.name}» no confirmó (226) «${remote}», pero el archivo está completo (${expected} bytes): se da por enviado`);
+                } else if (String(err.code) !== '550') {
+                    throw err;
+                } else {
+                    await this.retryAfter550(printer, remote, err, upload);
                 }
             }
             await progress(expected, expected, true);
@@ -318,6 +318,34 @@ export class FtpService {
             return {};
         } finally {
             rmSync(tmp, { force: true });
+        }
+    }
+
+    /**
+     * ¿Quedó el archivo completo en la impresora aunque el control FTP no confirmó? Pregunta el tamaño con conexiones nuevas,
+     * hasta ARRIVAL_CHECK_TRIES veces: una A1 que sigue grabando no contesta o devuelve un tamaño parcial. Nunca lanza.
+     */
+    async arrivedIntact(printer, remote, expected) {
+        if (!expected) return false;
+        for (let i = 0; i < ARRIVAL_CHECK_TRIES; i++) {
+            if (i > 0) await new Promise((resolve) => setTimeout(resolve, ARRIVAL_CHECK_EVERY_MS));
+            const size = await this.withClient(printer, (c) => c.size(remote), 20_000).catch(() => null);
+            if (size === expected) return true;
+        }
+
+        return false;
+    }
+
+    /** `550` = la impresora rechazó escribir (homónimo a medias bloqueado): se borra y se reintenta UNA vez. */
+    async retryAfter550(printer, remote, err, upload) {
+        // Lo más común es un homónimo a medias de un envío cortado (queda bloqueado). Si sigue, el motivo real es la SD o la impresora.
+        warn(`Puente: «${printer.name}» rechazó la subida de «${remote}» (${err.message}); borro el archivo anterior y reintento una vez`);
+        await this.withClient(printer, (c) => c.remove(remote).catch(() => {}));
+        try {
+            await upload();
+        } catch (again) {
+            if (String(again.code) !== '550') throw again;
+            throw new Error(`La impresora rechazó guardar «${remote}» (${again.message}). Revisá que tenga tarjeta SD, que no esté llena ni protegida, y que no esté ocupada; si sigue, reiniciala.`);
         }
     }
 
