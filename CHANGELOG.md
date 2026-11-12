@@ -14,6 +14,16 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.25 (beta) — 2026-11-12
+
+- Puente: `ftp.put` sube con **`curl`** como proceso hijo (`uploadCurl`) en vez de `basic-ftp`. Con el mismo archivo curl subía 3 MB a «auma»
+  a ~150 KB/s sin problema y `basic-ftp` dejaba a la impresora sin atender (MQTT mudo, subida que no terminaba, sin error). El access code va por
+  stdin (`-K -`), nunca en los argumentos; el avance sale del medidor `-#`. Mantiene el perro guardián de 60 s, el chequeo de llegada por tamaño
+  y el reintento por 550. Si no hay `curl` en el PATH cae a `basic-ftp` como antes.
+- Cámara del puente: si abre y no llega ningún frame («no mandó datos»), esa impresora queda 10 min sin reintentos (`CameraService.cooldown`).
+  Antes se abría cada ~1,5 min con el monitor abierto y cargaba a la impresora.
+- Log `[ftp-debug]` cada 10 s durante la subida: bytes, velocidad y segundos desde el último avance (DIAGNÓSTICO, sacar cuando se entienda).
+
 ## 1.1.24 (beta) — 2026-11-12
 
 - Log del puente: cada comando informado muestra su origen (`web: usuario · /ruta` o `cli: comando · clase`), que el server
