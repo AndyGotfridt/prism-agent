@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,6 +50,15 @@ export function cleanRemote(name, { flat = false, allowEmpty = false } = {}) {
     if (flat && value.includes('/')) throw new Error('Las subidas van a la raíz de la impresora');
 
     return value;
+}
+
+const CURL = process.platform === 'win32' ? 'curl.exe' : 'curl';
+let curlOk;
+/** ¿Hay un `curl` en el PATH? (macOS, Linux y Windows 10+ lo traen). Se pregunta una vez. */
+function hasCurl() {
+    curlOk ??= spawnSync(CURL, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
+
+    return curlOk;
 }
 
 /** Corta una lectura al llegar al tope: se usa como señal para abortar el RETR. */
@@ -268,7 +278,7 @@ export class FtpService {
             log(`Puente: subiendo «${remote}» a «${printer.name}» (${Math.round(expected / 1024 / 1024)} MB)`);
 
             // 5 min sin respuesta del control: al terminar los datos la impresora tarda en grabar el archivo antes de contestar «226».
-            const upload = () => this.withClient(printer, async (c) => {
+            const uploadBasic = () => this.withClient(printer, async (c) => {
                 // Latido: el server da por muerto un envío tras 90 s sin avance, y la impresora puede tardar más que eso en
                 // grabar el archivo antes de contestar «226». Se avisa cada 15 s con lo último que se sabe.
                 let sent = 0;
@@ -279,6 +289,12 @@ export class FtpService {
                 let sameSize = 0;
                 log(`Puente: conectado a «${printer.name}» por FTPS, empieza la subida de «${remote}»`);
                 const beat = setInterval(() => progress(sent, expected, true), 15_000);
+                // Diagnóstico: bytes y velocidad cada 10 s, para ver si la subida avanza lento o se frena del todo.
+                const startedAt = Date.now();
+                const trace = setInterval(() => {
+                    const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+                    log(`[ftp-debug] «${printer.name}» ${remote}: ${sent}/${expected} bytes a los ${secs} s (${Math.round(sent / 1024 / secs)} KB/s), último byte hace ${Math.round((Date.now() - lastBytesAt) / 1000)} s`);
+                }, 10_000);
                 // Perro guardián: sin un solo byte nuevo en 60 s la subida se corta (si no, la cola única de transferencias y
                 // la cámara de esa impresora quedan trabadas hasta los 180 s del control, o para siempre si el socket no avisa).
                 const dog = setInterval(() => {
@@ -314,6 +330,7 @@ export class FtpService {
                     throw err;
                 } finally {
                     clearInterval(beat);
+                    clearInterval(trace);
                     clearInterval(dog);
                     clearInterval(arrival);
                     c.trackProgress();
@@ -322,6 +339,8 @@ export class FtpService {
                 const size = await c.size(remote).catch(() => null);
                 if (expected && size !== null && size !== expected) throw new Error(`La impresora quedó con ${size} bytes y se esperaban ${expected}`);
             }, CONTROL_TIMEOUT_PUT_MS);
+            // curl, como el server: `basic-ftp` dejaba a la impresora sin atender (MQTT mudo, subida que no termina) con el mismo archivo que curl sube bien.
+            const upload = hasCurl() ? () => this.uploadCurl(printer, tmp, remote, expected, progress) : uploadBasic;
 
             try {
                 await upload();
@@ -339,6 +358,95 @@ export class FtpService {
             return {};
         } finally {
             rmSync(tmp, { force: true });
+        }
+    }
+
+    /**
+     * Sube `file` con `curl` (hijo): el access code viaja por stdin (`-K -`), nunca en los argumentos. El avance sale del
+     * medidor `-#` (porcentaje); el perro guardián, el latido y el chequeo de llegada son los de la subida por librería.
+     */
+    async uploadCurl(printer, file, remote, expected, progress) {
+        const q = (v) => `"${String(v).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+        const config = [
+            `user = ${q(`bblp:${printer.access_code}`)}`,
+            `url = ${q(`ftps://${printer.lan_ip}:990/${encodeURIComponent(remote)}`)}`,
+            `upload-file = ${q(file)}`,
+            'insecure',
+            'disable-epsv',
+            'progress-bar',
+            `max-time = ${HARD_LIMIT_HEAVY_MS / 1000 - 30}`,
+        ].join('\n');
+
+        const child = spawn(CURL, ['-K', '-'], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+        const open = this.clients.get(printer.id) ?? new Set();
+        const handle = { close: () => child.kill() }; // el tope duro lo corta como a un cliente FTP
+        open.add(handle);
+        this.clients.set(printer.id, open);
+
+        let sent = 0;
+        let lastBytesAt = Date.now();
+        let stalled = false;
+        let arrived = false;
+        let checking = false;
+        let sameSize = 0;
+        let tail = '';
+        const startedAt = Date.now();
+        log(`Puente: conectado a «${printer.name}» por FTPS (curl), empieza la subida de «${remote}»`);
+        child.stderr.on('data', (d) => {
+            tail = (tail + d.toString()).slice(-2000);
+            const pcts = [...tail.matchAll(/(\d+(?:\.\d+)?)%/g)];
+            if (pcts.length === 0) return;
+            const bytes = Math.min(expected, Math.round((Number(pcts[pcts.length - 1][1]) / 100) * expected));
+            if (bytes > sent) lastBytesAt = Date.now();
+            sent = Math.max(sent, bytes);
+            progress(sent, expected);
+        });
+        const beat = setInterval(() => progress(sent, expected, true), 15_000);
+        const trace = setInterval(() => {
+            const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+            log(`[ftp-debug] «${printer.name}» ${remote}: ~${sent}/${expected} bytes a los ${secs} s (${Math.round(sent / 1024 / secs)} KB/s), último avance hace ${Math.round((Date.now() - lastBytesAt) / 1000)} s`);
+        }, 10_000);
+        const dog = setInterval(() => {
+            if (sent < expected && Date.now() - lastBytesAt > STALL_MS) {
+                stalled = true;
+                child.kill();
+            }
+        }, 5_000);
+        const arrival = setInterval(async () => {
+            if (checking || arrived || sent < expected) return;
+            checking = true;
+            const size = await this.withClient(printer, (x) => x.size(remote), 15_000).catch(() => null);
+            checking = false;
+            sameSize = size === expected ? sameSize + 1 : 0;
+            if (sameSize >= 2 && !arrived) {
+                arrived = true;
+                warn(`Puente: «${printer.name}» ya tiene «${remote}» completo (${expected} bytes) y no confirma (226): se da por enviado`);
+                child.kill();
+            }
+        }, ARRIVAL_CHECK_EVERY_MS);
+
+        try {
+            child.stdin.on('error', () => {});
+            child.stdin.end(config);
+            const code = await new Promise((resolve, reject) => {
+                child.on('error', reject);
+                child.on('close', (c) => resolve(c));
+            });
+            if (arrived || code === 0) return;
+            if (stalled) throw new Error(`La impresora dejó de recibir datos cerca de los ${sent} de ${expected} bytes (sin avance por ${STALL_MS / 60_000} min). Revisá el Wi-Fi de la impresora o reiniciala.`);
+            const msg = tail.replaceAll(printer.access_code, '***').replace(/[#\s]*\d+(?:\.\d+)?%/g, '').trim().slice(-300);
+            const err = new Error(`curl terminó con código ${code}${msg ? `: ${msg}` : ''}`);
+            if (/\b550\b/.test(tail)) err.code = '550';
+            else if (code === 28) err.message = `Timeout: ${err.message}`;
+            throw err;
+        } finally {
+            clearInterval(beat);
+            clearInterval(trace);
+            clearInterval(dog);
+            clearInterval(arrival);
+            child.kill();
+            open.delete(handle);
+            if (open.size === 0 && this.clients.get(printer.id) === open) this.clients.delete(printer.id);
         }
     }
 

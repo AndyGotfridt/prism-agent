@@ -113,6 +113,8 @@ export async function snapshotOnce(printer, timeoutMs = 8_000) {
     return frame;
 }
 
+const NO_DATA_COOLDOWN_MS = 10 * 60_000;
+
 /**
  * Cámara en vivo bajo demanda: una sesión por impresora que sube 1 frame por segundo mientras el server
  * siga pidiéndolo (`watch` la renueva) y hasta que `until` venza. Un 409 del server (nadie mira) la corta.
@@ -124,6 +126,7 @@ export class CameraService {
         this.sessions = new Map(); // printer id → { until, ctl }
         this.held = new Map(); // impresora → pausas abiertas (con contador: comandos FTP que se solapan no se pisan)
         this.heldAll = 0; // pausas de TODAS las cámaras (transferencia pesada en cualquier impresora)
+        this.cooldown = new Map(); // impresora → hasta cuándo no se reintenta (la cámara no mandó datos: abrirla cada pocos minutos sólo carga a la impresora)
     }
 
     /** ¿La cámara de esa impresora está en pausa? */
@@ -156,6 +159,7 @@ export class CameraService {
     /** Empieza (o extiende) el stream de una impresora durante `seconds`. */
     watch(printer, seconds) {
         if (this.isHeld(printer.id)) return; // transfiriendo un archivo: el server vuelve a pedirla después
+        if ((this.cooldown.get(printer.id) ?? 0) > Date.now()) return; // no mandó datos hace poco: no se insiste
         const until = Date.now() + Math.min(300, Math.max(5, seconds)) * 1000;
         const current = this.sessions.get(printer.id);
         if (current) {
@@ -205,6 +209,11 @@ export class CameraService {
                 }, { signal: session.ctl.signal });
             } catch (err) {
                 warn(`Puente: cámara de «${printer.name}»: ${err.message}`);
+                if (!live) {
+                    this.cooldown.set(printer.id, Date.now() + NO_DATA_COOLDOWN_MS);
+                    warn(`Puente: cámara de «${printer.name}» en pausa ${NO_DATA_COOLDOWN_MS / 60_000} min (no mandó datos)`);
+                    break;
+                }
             }
             if (session.ctl.signal.aborted || Date.now() >= session.until) break;
             await new Promise((r) => setTimeout(r, backoff));
