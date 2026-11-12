@@ -204,7 +204,7 @@ export class CommandRunner {
             if (!api) return;
             try {
                 await api.post(`/bridge/commands/${cmd.id}/result`, body);
-                if (body.ok) log(`Puente: ${cmd.type} #${cmd.id} hecho`);
+                if (body.ok) log(`Puente: ${cmd.type} #${cmd.id} hecho${cmd.payload?.origin ? ` (${cmd.payload.origin})` : ''}`);
 
                 return;
             } catch (err) {
