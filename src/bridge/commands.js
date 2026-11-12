@@ -163,16 +163,32 @@ export class CommandRunner {
         const bad = validatePayload(cmd.payload?.payload);
         if (bad) throw new Error(bad);
 
+        // Diagnóstico temporal (1.1.23): qué pide el server y en qué estado está el MQTT en ese momento.
+        const inner = cmd.payload.payload ?? {};
+        const kind = Object.keys(inner)[0] ?? '—';
+        const what = `${kind}.${inner[kind]?.command ?? '—'}`;
+        link.dbg(`${cmd.type} #${cmd.id} ${what}: connected=${link.connected}, client.connected=${link.client?.connected}, sin reportes hace ${link.silentFor()} s, error=${link.error ?? '—'}`);
+
         switch (cmd.type) {
             case 'mqtt.publish':
-                await link.publish(cmd.payload.payload);
+                await link.publish(cmd.payload.payload).then(
+                    () => link.dbg(`#${cmd.id} ${what}: publicado en el broker`),
+                    (err) => {
+                        link.dbg(`#${cmd.id} ${what}: FALLÓ al publicar: ${err.message}`);
+                        throw err;
+                    },
+                );
 
                 return {};
             case 'mqtt.request': {
                 const { ack_command: ack, sequence_id: seq } = cmd.payload;
                 if (typeof ack !== 'string' || ack === '' || ack.length > 60) throw new Error('Falta el comando a esperar');
                 const timeout = Math.min(30, Math.max(1, Number(cmd.payload.timeout) || 10));
-                const print = await link.request(cmd.payload.payload, ack, String(seq ?? ''), timeout * 1000);
+                const print = await link.request(cmd.payload.payload, ack, String(seq ?? ''), timeout * 1000).catch((err) => {
+                    link.dbg(`#${cmd.id} ${what}: FALLÓ: ${err.message}`);
+                    throw err;
+                });
+                link.dbg(`#${cmd.id} ${what}: ${print ? `respondió (command=${print.command}, result=${print.result ?? '—'}, reason=${print.reason ?? '—'})` : `SIN respuesta en ${timeout} s (la impresora no contestó)`}`);
 
                 return { print };
             }

@@ -27,6 +27,22 @@ export class MqttLink {
         this.lastLoggedError = null; // último motivo de «no conecta» ya logueado
         this.wasOffline = false;
         this.waiters = new Set(); // pedidos esperando el ack de la impresora (`request`)
+        this.connectedAt = null; // ms
+        this.lastPushAt = null; // ms del último pushall publicado
+        this.silentLoggedAt = 0;
+        this.watchTimer = null;
+    }
+
+    /** Diagnóstico temporal (1.1.23): qué pasa con el MQTT de cada impresora. Sacar cuando se entienda el «sin conexión». */
+    dbg(msg) {
+        log(`[mqtt-debug] «${this.printer.name}» ${msg}`);
+    }
+
+    /** Segundos desde el último reporte de la impresora (o desde que conectó, si todavía no mandó ninguno). */
+    silentFor() {
+        const ref = this.lastReportAt ?? this.connectedAt;
+
+        return ref ? Math.round((Date.now() - ref) / 1000) : null;
     }
 
     start() {
@@ -45,7 +61,9 @@ export class MqttLink {
             this.connected = true;
             this.error = null;
             this.lastLoggedError = null;
+            this.connectedAt = Date.now();
             log(`Puente: conectado a «${name}» (${ip})`);
+            this.dbg('connect (sesión MQTT nueva)');
             this.client.subscribe(`device/${serial}/report`, { qos: 0 }, (err) => {
                 if (err) this.error = `No se pudo suscribir: ${err.message}`;
             });
@@ -55,6 +73,20 @@ export class MqttLink {
             this.pushTimer.unref?.();
             this.onChange();
         });
+
+        this.client.on('reconnect', () => this.dbg('reconnect (reintentando)'));
+        this.client.on('disconnect', (packet) => this.dbg(`disconnect del broker: ${JSON.stringify(packet)}`));
+        this.client.on('end', () => this.dbg('end'));
+
+        // Perro guardián de diagnóstico: conectado pero la A1 sin hablar. NO reconecta, sólo avisa (cada 60 s).
+        clearInterval(this.watchTimer);
+        this.watchTimer = setInterval(() => {
+            const silent = this.silentFor();
+            if (!this.connected || silent === null || silent < 60 || Date.now() - this.silentLoggedAt < 60_000) return;
+            this.silentLoggedAt = Date.now();
+            this.dbg(`CONECTADO pero sin reportes hace ${silent} s (último pushall hace ${this.lastPushAt ? Math.round((Date.now() - this.lastPushAt) / 1000) : '—'} s, client.connected=${this.client?.connected})`);
+        }, 15_000);
+        this.watchTimer.unref?.();
 
         this.client.on('message', (_topic, payload) => {
             let print;
@@ -66,6 +98,7 @@ export class MqttLink {
             if (!print || typeof print !== 'object') return;
             for (const waiter of this.waiters) waiter(print);
             this.state = { ...this.state, ...print };
+            if (this.lastReportAt === null || Date.now() - this.lastReportAt > 60_000) this.dbg(`reporte recibido (command=${print.command ?? '—'}, gcode_state=${print.gcode_state ?? '—'}), antes silencio de ${this.silentFor()} s`);
             this.lastReportAt = Date.now();
             this.dirty = true;
             this.onChange();
@@ -73,6 +106,7 @@ export class MqttLink {
 
         const down = (reason) => {
             if (this.connected) warn(`Puente: se perdió «${name}» (${ip}): ${reason}`);
+            if (this.connected) this.dbg(`caída tras ${this.silentFor()} s sin reportes (conectado desde hace ${this.connectedAt ? Math.round((Date.now() - this.connectedAt) / 1000) : '—'} s)`);
             this.connected = false;
             this.error = reason;
             clearInterval(this.pushTimer);
@@ -94,6 +128,7 @@ export class MqttLink {
 
     pushAll() {
         if (!this.client?.connected) return;
+        this.lastPushAt = Date.now();
         this.client.publish(
             `device/${this.printer.serial}/request`,
             JSON.stringify({ pushing: { sequence_id: String(Math.floor(Date.now() / 1000)), command: 'pushall', version: 1, push_target: 1 } }),
@@ -170,6 +205,7 @@ export class MqttLink {
 
     stop() {
         clearInterval(this.pushTimer);
+        clearInterval(this.watchTimer);
         this.pushTimer = null;
         this.client?.end(true);
         this.client = null;
