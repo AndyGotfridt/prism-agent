@@ -14,6 +14,13 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.22 (beta) — 2026-11-11
+
+- Puente: `ftp.put` y el resto de las operaciones FTPS fuerzan PASV clásico (`prepareTransfer = enterPassiveModeIPv4`), como el `curl` del server
+  (`CURLOPT_FTP_USE_EPSV=false`); `basic-ftp` probaba EPSV primero y las Bambu lo manejan mal.
+- Puente: terminados los bytes de `ftp.put`, mientras se espera el «226» se consulta el tamaño por otra conexión cada 10 s; con el archivo
+  completo en 2 consultas seguidas se cierra el control y se da el envío por hecho (antes se esperaba hasta 5 min el «226» y recién ahí `arrivedIntact`).
+
 ## 1.1.21 (beta) — 2026-11-11
 
 - Puente: si `ftp.put` da `Timeout (control socket)` (la A1 no contestó el «226» tras el último byte), antes de fallar se le pregunta el
