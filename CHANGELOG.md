@@ -14,6 +14,11 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.24 (beta) — 2026-11-12
+
+- Log del puente: cada comando informado muestra su origen (`web: usuario · /ruta` o `cli: comando · clase`), que el server
+  agrega al payload (`origin`). Sirve para saber quién pide cada `camera.watch` o `mqtt.*`.
+
 ## 1.1.23 (beta) — 2026-11-11
 
 - Puente (DIAGNÓSTICO TEMPORAL, líneas `[mqtt-debug]` en el log): ciclo de vida del MQTT de cada impresora (connect, reconnect, disconnect, end, caída con
