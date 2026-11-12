@@ -14,6 +14,13 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.23 (beta) — 2026-11-11
+
+- Puente (DIAGNÓSTICO TEMPORAL, líneas `[mqtt-debug]` en el log): ciclo de vida del MQTT de cada impresora (connect, reconnect, disconnect, end, caída con
+  segundos sin reportes), aviso cada 60 s si está «conectado» pero la A1 no manda reportes (no reconecta, sólo avisa), y cada `mqtt.publish` /
+  `mqtt.request` con su comando, el estado del enlace y el resultado (publicado / respondió / sin respuesta). Para entender por qué la impresora queda
+  «Sin conexión» tras una subida de archivo. Sacar cuando se entienda.
+
 ## 1.1.22 (beta) — 2026-11-11
 
 - Puente: `ftp.put` y el resto de las operaciones FTPS fuerzan PASV clásico (`prepareTransfer = enterPassiveModeIPv4`), como el `curl` del server
