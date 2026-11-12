@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Client } from 'basic-ftp';
+import { Client, enterPassiveModeIPv4 } from 'basic-ftp';
 import { log, warn } from '../log.js';
 
 /**
@@ -181,6 +181,8 @@ export class FtpService {
     /** Una conexión FTPS por operación, siempre cerrada. */
     async withClient(printer, fn, timeoutMs = 30_000) {
         const client = new Client(timeoutMs);
+        // PASV clásico, como el curl del server (CURLOPT_FTP_USE_EPSV=false): las Bambu manejan mal EPSV, que basic-ftp prueba primero.
+        client.prepareTransfer = enterPassiveModeIPv4;
         const open = this.clients.get(printer.id) ?? new Set();
         open.add(client);
         this.clients.set(printer.id, open);
@@ -272,6 +274,9 @@ export class FtpService {
                 let sent = 0;
                 let lastBytesAt = Date.now();
                 let stalled = false;
+                let arrived = false;
+                let checking = false;
+                let sameSize = 0;
                 log(`Puente: conectado a «${printer.name}» por FTPS, empieza la subida de «${remote}»`);
                 const beat = setInterval(() => progress(sent, expected, true), 15_000);
                 // Perro guardián: sin un solo byte nuevo en 60 s la subida se corta (si no, la cola única de transferencias y
@@ -282,6 +287,20 @@ export class FtpService {
                         c.close();
                     }
                 }, 5_000);
+                // Terminados los datos la A1 tarda en grabar antes del «226»: en vez de esperarlo hasta 5 min, se le pregunta el
+                // tamaño por otra conexión y, con el archivo completo en dos consultas seguidas, se da por enviado.
+                const arrival = setInterval(async () => {
+                    if (checking || arrived || sent < expected) return;
+                    checking = true;
+                    const size = await this.withClient(printer, (x) => x.size(remote), 15_000).catch(() => null);
+                    checking = false;
+                    sameSize = size === expected ? sameSize + 1 : 0;
+                    if (sameSize >= 2 && !arrived) {
+                        arrived = true;
+                        warn(`Puente: «${printer.name}» ya tiene «${remote}» completo (${expected} bytes) y no confirma (226): se da por enviado`);
+                        c.close();
+                    }
+                }, ARRIVAL_CHECK_EVERY_MS);
                 c.trackProgress((info) => {
                     if (info.bytes > sent) lastBytesAt = Date.now();
                     sent = info.bytes;
@@ -290,11 +309,13 @@ export class FtpService {
                 try {
                     await c.uploadFrom(createReadStream(tmp), remote);
                 } catch (err) {
+                    if (arrived) return;
                     if (stalled) throw new Error(`La impresora dejó de recibir datos a los ${sent} de ${expected} bytes (sin avance por ${STALL_MS / 1000} s). Revisá el Wi-Fi de la impresora o reiniciala.`);
                     throw err;
                 } finally {
                     clearInterval(beat);
                     clearInterval(dog);
+                    clearInterval(arrival);
                     c.trackProgress();
                 }
                 log(`Puente: «${remote}» enviado a «${printer.name}», verificando tamaño`);
