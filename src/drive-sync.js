@@ -894,8 +894,16 @@ class PullTask {
                     // Pedimos desde `offset` y el server devolvió todo: no se puede seguir sin duplicar bytes.
                     if (res.status === 200 && offset > 0) throw new Fatal('El server no respondió al Range: no se puede reanudar la bajada.');
 
+                    // Una respuesta 206 que no empieza donde pedimos duplicaría (o saltearía) bytes: no se escribe nada.
+                    if (res.status === 206 && offset > 0) {
+                        const start = /^bytes (\d+)-/.exec(res.headers?.get?.('content-range') ?? '')?.[1];
+                        if (start !== undefined && Number(start) !== offset) throw new Error(`el server reanudó en ${start} y se pidió ${offset}`);
+                    }
+
                     for await (const chunk of res.body) {
                         if (this.shouldStop()) throw new Aborted();
+                        // Más bytes de los que mide el archivo: el contenido ya no puede coincidir, no seguir llenando el disco.
+                        if (offset + chunk.length > entry.size) throw new Fatal(`llegaron más bytes de los esperados (${entry.size})`);
                         writeSync(fd, chunk);
                         hash.update(chunk);
                         offset += chunk.length;
