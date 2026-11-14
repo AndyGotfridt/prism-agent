@@ -14,6 +14,15 @@ muestra en la web. Lo que ven las computadoras es el *changelog* que se escribe 
   `.agents/skills/`).
 - Una entrada por versión, la más nueva arriba. Formato: `## X.Y.Z (canal) — AAAA-MM-DD`.
 
+## 1.1.26 (beta) — 2026-11-13
+
+- Drive, bajada (`PullTask.download`, también usada por los dos sentidos): una bajada de `COORDENADAS3D.zip` (1,4 GB) terminó con 2,9 GB escritos
+  («bajó 2911914436 de 1443459739 bytes») aunque Drive no cambió de tamaño. Causa sin confirmar (algún reintento con `Range` que llegó mal).
+  Ahora: una respuesta 206 cuyo `Content-Range` no empieza en el `offset` pedido se descarta y se reintenta sin escribir; y si llegan más bytes
+  que `entry.size` se corta con `Fatal('llegaron más bytes de los esperados')` en vez de seguir llenando el disco.
+- Pendiente (no incluido): `BothTask.scan()` usa `plan.decided` sin revisar si la respuesta de `/both/reconcile` vino vacía (visto el 12/11
+  19:56 tras 3 min de espera: «null is not an object (evaluating 'W.decided')»).
+
 ## 1.1.25 (beta) — 2026-11-12
 
 - Puente: `ftp.put` sube con **`curl`** como proceso hijo (`uploadCurl`) en vez de `basic-ftp`. Con el mismo archivo curl subía 3 MB a «auma»
